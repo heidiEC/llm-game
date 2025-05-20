@@ -1,0 +1,13 @@
+# For game.py
+neo4j
+anthropic
+
+# For mcp_client.py
+httpx
+
+# For mcp-server.py (FastAPI server components)
+fastapi
+uvicorn[standard] # For running the FastAPI server
+redis             # For caching in the MCP server
+sse-starlette     # For Server-Sent Events in the MCP server
+# pydantic is a dependency of fastapi, so it will be installed automatically
