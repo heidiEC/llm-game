@@ -1,14 +1,16 @@
 import os
 from neo4j import GraphDatabase
 from anthropic import Anthropic
-import re # Added missing import
+import ollama # Import ollama client
+import re 
 import json
 import random
 import dotenv
-import time # Add missing time import
+import time 
 import redis
-import certifi # Import certifi
-import hashlib # Moved import to top
+import certifi 
+import hashlib 
+from datetime import datetime 
 
 dotenv.load_dotenv()
 
@@ -40,7 +42,9 @@ REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
 # Anthropic API setup
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL = "claude-3-5-sonnet-20240620"  # Update as needed
+CLAUDE_MODEL = "claude-3-5-sonnet-20240620"  # Default for Anthropic
+OLLAMA_MODEL = "llama3:latest" # Default for Ollama, ensure this model is pulled in Ollama
+
 
 class KnowledgeGraphGame:
     def __init__(self):
@@ -69,6 +73,18 @@ class KnowledgeGraphGame:
         else:
             self.client = None
             print("WARNING: ANTHROPIC_API_KEY not set. LLM functionality will not work.")
+        
+        # Initialize Ollama client
+        try:
+            self.ollama_client = ollama.Client()
+            # Test connection by listing local models (or a more lightweight ping if available)
+            self.ollama_client.list() 
+            self.ollama_available = True
+            print("INFO: Ollama client initialized and connected.")
+        except Exception as e:
+            self.ollama_client = None
+            self.ollama_available = False
+            print(f"WARNING: Could not initialize Ollama client: {e}. Ollama models will not work.")
         
         # Initialize game state
         self.turn_count = 0
@@ -276,19 +292,24 @@ class KnowledgeGraphGame:
             # Save updated state to Redis
             self.save_game_state_to_redis()
     
-    def add_llm_participant(self, name, model_name=None):
+    def add_llm_participant(self, name, model_name=None, client_type="anthropic"):
         """Add an LLM participant to the game"""
         # Check if participant with this name already exists to avoid duplicates if loading from Redis
         for p in self.participants:
             if p["name"] == name:
                 print(f"INFO: Participant '{name}' already exists. Not adding again.")
                 return len(self.participants)
+            
+        default_model = CLAUDE_MODEL
+        if client_type == "ollama":
+            default_model = OLLAMA_MODEL
 
         participant = {
             "id": len(self.participants) + 1, # This ID might not be unique if participants are loaded then more added
             "name": name,
-            "type": "LLM",
-            "model": model_name or CLAUDE_MODEL,
+            "type": "LLM", # Could also be "OllamaLLM" or "AnthropicLLM" if more distinction needed
+            "model": model_name or default_model,
+            "client_type": client_type, # "anthropic" or "ollama"
             "contributions": []
         }
         self.participants.append(participant)
@@ -299,6 +320,25 @@ class KnowledgeGraphGame:
         
         return len(self.participants)
     
+    def add_agent_participant(self, name="ResearchAgent"):
+        """Add an Agent participant to the game"""
+        # Check if agent already exists
+        for p in self.participants:
+            if p["name"] == name and p["type"] == "Agent":
+                print(f"INFO: Agent participant '{name}' already exists. Not adding again.")
+                return len(self.participants)
+
+        agent = {
+            "id": len(self.participants) + 1,
+            "name": name,
+            "type": "Agent", # New type
+            "contributions": [] # To store its actions/findings
+        }
+        self.participants.append(agent)
+        print(f"INFO: Added Agent participant: {name}")
+        self.save_game_state_to_redis()
+        return len(self.participants)
+
     def get_graph_cypher_representation(self):
         """Get the current graph state as a series of Cypher commands"""
         with self.driver.session() as session:
@@ -395,7 +435,12 @@ class KnowledgeGraphGame:
         
         **Important for Cypher:**
         - To connect to an existing node, use a `MATCH` clause. For example: `MATCH (existingNode:Concept {{name: "Ant Colony Optimization"}})`
-        - Then, use `CREATE` or `MERGE` for your new additions, linking them to `existingNode`.
+        - Then, use `CREATE` or `MERGE` for your new additions, linking them to `existingNode`. `MERGE` is preferred for nodes/relationships that might already exist to avoid duplicates.
+        - **VERY IMPORTANT: If your contribution involves multiple steps (e.g., creating a node, then matching another node, then creating a relationship between them), break EACH step into a separate Cypher command ending with a semicolon (`;`).**
+        - **Example of a multi-step contribution broken down:**
+        - `MERGE (newNode:Concept {{name: "New Idea"}});`
+        - `MATCH (existingNode:Concept {{name: "Old Idea"}}), (newNode:Concept {{name: "New Idea"}}) MERGE (newNode)-[:RELATES_TO]->(existingNode);`
+        - **Avoid complex single Cypher statements that perform writes (CREATE/MERGE) and then reads (MATCH) without being separated by semicolons. Prefer simpler, semicolon-separated commands.**
         - Your Cypher commands should ONLY include the new elements or modifications you are adding. Do NOT repeat the Cypher for the existing graph.
         
         Your contribution should:
@@ -424,54 +469,73 @@ class KnowledgeGraphGame:
     
     def process_llm_turn(self, participant_index):
         """Process a turn for an LLM participant"""
-        if not self.client:
-            print("No Anthropic client available. Cannot process LLM turn.")
-            return None
         
         participant = self.participants[participant_index]
         prompt = self.generate_prompt_for_llm(participant_index)
+        response_text = None
         
         try:
-            # --- Call Claude API with Retry Logic ---
-            max_retries = 3
-            retry_delay = 5  # seconds
-            response = None
-            for attempt in range(max_retries):
-                try:
-                    response = self.client.messages.create(
-                        model=participant["model"],
-                        max_tokens=4000,
-                        temperature=0.8,
-                        messages=[
-                            {"role": "user", "content": prompt}
-                        ]
-                    )
-                    break # Success, exit retry loop
-                except (self.client.APIConnectionError, self.client.RateLimitError, self.client.APIStatusError) as e:
-                    # APIStatusError will catch 529s
-                    print(f"WARNING: API error for {participant['name']} (Attempt {attempt + 1}/{max_retries}): {type(e).__name__} - {e}")
-                    if attempt < max_retries - 1:
-                        print(f"Retrying in {retry_delay} seconds...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2 # Exponential backoff
-                    else:
-                        print(f"ERROR: Max retries reached for {participant['name']}. API call failed.")
-                        raise # Re-raise the last exception to be caught by the outer try-except
-            
-            if response is None: # Should be caught by re-raise above, but as a safeguard
-                raise Exception("API response was None after retries, indicating failure.")
-            # --- End of API Call with Retry Logic ---
+            if participant["client_type"] == "anthropic":
+                if not self.client:
+                    raise Exception("Anthropic client not available.")
+                # --- Call Claude API with Retry Logic ---
+                max_retries = 3
+                retry_delay = 5  # seconds
+                api_response_obj = None
+                for attempt in range(max_retries):
+                    try:
+                        api_response_obj = self.client.messages.create(
+                            model=participant["model"],
+                            max_tokens=4000,
+                            temperature=0.8,
+                            messages=[ {"role": "user", "content": prompt} ]
+                        )
+                        break # Success, exit retry loop
+                    except (self.client.APIConnectionError, self.client.RateLimitError, self.client.APIStatusError) as e:
+                        print(f"WARNING: Anthropic API error for {participant['name']} (Attempt {attempt + 1}/{max_retries}): {type(e).__name__} - {e}")
+                        if attempt < max_retries - 1:
+                            print(f"Retrying in {retry_delay} seconds...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2 # Exponential backoff
+                        else:
+                            print(f"ERROR: Max retries reached for Anthropic API call for {participant['name']}.")
+                            raise # Re-raise the last exception
+                if api_response_obj is None:
+                    raise Exception("Anthropic API response was None after retries.")
+                response_text = api_response_obj.content[0].text
+                # --- End of Anthropic API Call ---
 
-            
-            print(f"\nDEBUG: LLM ({participant['name']}) raw response text:\n'''\n{response.content[0].text}\n'''")
-            
-            response_text = response.content[0].text
+            elif participant["client_type"] == "ollama":
+                if not self.ollama_available or not self.ollama_client:
+                    raise Exception("Ollama client not available.")
+                
+                print(f"INFO: Sending prompt to Ollama model: {participant['model']} for participant {participant['name']}")
+                # Using ollama.chat for better instruction following
+                # Note: Ollama can be slow, especially for larger contexts or complex prompts.
+                # No explicit retry logic here yet, but can be added similarly to Anthropic.
+                ollama_response = self.ollama_client.chat(
+                    model=participant['model'],
+                    messages=[{'role': 'user', 'content': prompt}],
+                    stream=False # Keep it simple for now, get full response
+                    # options={"temperature": 0.7} # Example of setting options
+                )
+                if ollama_response and 'message' in ollama_response and 'content' in ollama_response['message']:
+                    response_text = ollama_response['message']['content']
+                else:
+                    raise Exception("Invalid or empty response structure from Ollama.")
+            else:
+                raise ValueError(f"Unknown client type: {participant['client_type']} for participant {participant['name']}")
+
+            if not response_text:
+                 raise Exception("LLM response text is empty.")
+
+            print(f"\nDEBUG: LLM ({participant['name']} using {participant['model']}) raw response text:\n'''\n{response_text}\n'''")
             
             # Extract Cypher commands from response
             # Regex to capture content within a markdown Cypher block ```cypher ... ```
             # or after a specific comment line // Your Cypher commands here
             cypher_block_match = re.search(
-                r"```cypher\n(.*?)\n```|// Your Cypher commands here\n(.*?)(?=\n\n\n3\.|\Z)",
+                r"```cyph?er\n(.*?)\n```|// Your Cypher commands here\n(.*?)(?=\n\n\n3\.|\Z)", # Made 'p' in cypher optional
                 response_text,
                 re.DOTALL | re.IGNORECASE)
             
@@ -614,13 +678,13 @@ if __name__ == "__main__":
     
     # Add LLM participants
     # Using descriptive names and different Claude models if available/desired
-    game.add_llm_participant("PhilosopherOfComplexity_LLM", model_name="claude-3-5-sonnet-20240620") 
-    game.add_llm_participant("RoboticsFuturist_LLM", model_name="claude-3-5-sonnet-20240620")
-    game.add_llm_participant("ComputationalBiologist_LLM", model_name="claude-3-5-sonnet-20240620")
-    game.add_llm_participant("Neuroscientist_LLM", model_name="claude-3-5-sonnet-20240620") 
-    game.add_llm_participant("MaterialsInnovator_LLM", model_name="claude-3-5-sonnet-20240620")
-    game.add_llm_participant("AI_Ethicist_LLM", model_name="claude-3-5-sonnet-20240620") # Opus for deeper ethical reasoning if available
-    game.add_llm_participant("EvolutionaryEcologist_LLM", model_name="claude-3-5-sonnet-20240620")
+    game.add_llm_participant("PhilosopherOfComplexity_LLM", model_name="llama3:latest",client_type="ollama") 
+    game.add_llm_participant("RoboticsFuturist_LLM", model_name="llama3:latest",client_type="ollama")
+    game.add_llm_participant("ComputationalBiologist_LLM", model_name="llama3:latest",client_type="ollama")
+    game.add_llm_participant("Neuroscientist_LLM", model_name="llama3:latest",client_type="ollama") 
+    game.add_llm_participant("MaterialsInnovator_LLM", model_name="llama3:latest",client_type="ollama")
+    game.add_llm_participant("AI_Ethicist_LLM", model_name="llama3:latest",client_type="ollama")
+    game.add_llm_participant("EvolutionaryEcologist_LLM", model_name="llama3:latest",client_type="ollama")
     
     # Initialize graph: ensures seed nodes exist using MERGE, doesn't wipe by default.
     # Set force_reset=True if you want to start completely fresh (e.g., game.initialize_graph(force_reset=True))
