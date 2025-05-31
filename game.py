@@ -71,63 +71,78 @@ class KnowledgeGraphGame:
             "relationships": relationships
         }
 
-    def setup_sustainable_urban_development_participants(self):
-        """Set up participants for Sustainable Urban Development domain"""
+    def setup_audrey_hepburn_participants(self):
+        """Set up participants for Digital Audrey Hepburn context pod"""
         participants_config = [
             {
-                "name": "UrbanPlanningExpert_LLM",
-                "expertise": "Urban Planning & Design",
-                "focus": "Zoning, transportation networks, mixed-use development, smart city infrastructure"
+                "name": "DevelopmentalTraumaSpecialist_LLM",
+                "expertise": "Childhood Trauma & Resilience",
+                "focus": "Wartime starvation, father abandonment, witnessing atrocities, post-traumatic growth"
             },
             {
-                "name": "EnvironmentalScientist_LLM", 
-                "expertise": "Environmental Systems",
-                "focus": "Air quality, water management, green infrastructure, carbon footprint, biodiversity"
+                "name": "AttachmentTheorist_LLM", 
+                "expertise": "Attachment Patterns & Relationships",
+                "focus": "Marriage patterns, motherhood, relationship dynamics, emotional security"
             },
             {
-                "name": "SocialPolicyAnalyst_LLM",
-                "expertise": "Social Policy & Equity",
-                "focus": "Housing affordability, community engagement, social justice, demographic impacts"
+                "name": "PerformancePsychologist_LLM",
+                "expertise": "Inner Life to Screen Presence",
+                "focus": "Emotional authenticity, vulnerability as strength, psychological method acting"
             },
             {
-                "name": "EconomicDevelopmentSpecialist_LLM",
-                "expertise": "Economic Systems",
-                "focus": "Local economy, job creation, cost-benefit analysis, funding mechanisms"
+                "name": "AuthorizedBiographer_LLM",
+                "expertise": "Private Letters & Personal Documents", 
+                "focus": "Intimate thoughts, private struggles, personal growth, authentic voice"
             },
             {
-                "name": "TechnologyInnovator_LLM",
-                "expertise": "Smart City Technology",
-                "focus": "IoT sensors, data analytics, renewable energy systems, digital governance"
+                "name": "FamilyHistorian_LLM",
+                "expertise": "Estate Archives & Family Stories",
+                "focus": "Untold family dynamics, private moments, generational patterns"
             },
             {
-                "name": "TransportationEngineer_LLM",
-                "expertise": "Mobility & Transportation",
-                "focus": "Public transit, cycling infrastructure, electric vehicles, traffic optimization"
+                "name": "CloseAssociatesInterviewer_LLM",
+                "expertise": "Personal Relationships & Memories",
+                "focus": "Friends' recollections, behind-scenes moments, authentic personality"
             },
             {
-                "name": "AffordableHousingAdvocate_LLM",
-                "expertise": "Affordable Housing",
-                "focus": "Housing policy, gentrification, tenant rights, community land trusts"
+                "name": "PersonalityPsychologist_LLM",
+                "expertise": "Trait Development Over Lifespan",
+                "focus": "Character evolution, consistent patterns, growth through adversity"
             },
             {
-                "name": "CommunityAdvocate_LLM",
-                "expertise": "Community Engagement",
-                "focus": "Resident participation, cultural preservation, neighborhood dynamics, grassroots initiatives"
+                "name": "CommunicationAnalyst_LLM",
+                "expertise": "Speech Patterns & Linguistic Evolution", 
+                "focus": "Word choices, speaking style, communication authenticity, linguistic development"
             },
             {
-                "name": "ClimateResilienceExpert_LLM",
-                "expertise": "Climate Adaptation",
-                "focus": "Flood management, heat island effects, disaster preparedness, resilient infrastructure"
+                "name": "MovementSpecialist_LLM",
+                "expertise": "Physicality & Emotional Expression",
+                "focus": "Body language, dance background, physical emotional expression, grace under pressure"
             },
             {
-                "name": "PublicHealthSpecialist_LLM",
-                "expertise": "Public Health",
-                "focus": "Air quality, walkability, mental health, health equity, environmental health, climate change, infectious disease prevention, health policy, community health"
+                "name": "SocialHistorian_LLM",
+                "expertise": "1940s-60s Cultural Context",
+                "focus": "Generational worldview, social expectations, historical consciousness"
             },
             {
-                "name": "DisasterRecoveryExpert_LLM",
-                "expertise": "Disaster Resilience & Emergency Management",
-                "focus": "Emergency preparedness, evacuation planning, infrastructure hardening, community resilience, post-disaster recovery"
+                "name": "PhilanthropyResearcher_LLM",
+                "expertise": "Humanitarian Motivations",
+                "focus": "UNICEF work authenticity, genuine compassion, service psychology"
+            },
+            {
+                "name": "EuropeanCulturalPsychologist_LLM",
+                "expertise": "Dutch Sensibilities vs Hollywood Persona",
+                "focus": "Cultural identity, European values, authenticity vs. performance"
+            },
+            {
+                "name": "GriefCounselor_LLM",
+                "expertise": "Loss & Resilience",
+                "focus": "Pregnancy losses, deaths of loved ones, grief processing, emotional depth"
+            },
+            {
+                "name": "SpiritualPhilosopher_LLM", 
+                "expertise": "Meaning-Making & Faith",
+                "focus": "Quest for meaning, relationship with spirituality, philosophical development"
             }
         ]
         
@@ -141,61 +156,38 @@ class KnowledgeGraphGame:
             self.participants[-1]["expertise"] = participant["expertise"]
             self.participants[-1]["focus"] = participant["focus"]
 
-    async def initialize_graph(self, force_reset=False, domain="sustainable_urban_development"):
-        """Enhanced initialization with domain-specific seed data"""
-        if force_reset:
-            print("INFO: Force reset requested. Clearing entire graph via MCP...")
+    async def initialize_graph(self, force_reset=False, domain="audrey_hepburn"):
+        if force_reset or domain == "audrey_hepburn":
+            print("INFO: Clearing graph for Audrey Hepburn context pod...")
             try:
-                response = await self.mcp_client.execute_query("MATCH (n) DETACH DELETE n")
+                await self.mcp_client.execute_query("MATCH (n) DETACH DELETE n")
                 print("INFO: Graph cleared via MCP.")
             except Exception as e:
                 print(f"ERROR: Could not clear graph via MCP: {e}")
 
-        print(f"INFO: Ensuring foundational seed nodes and relationships exist for {domain}...")
-        
-        if domain == "sustainable_urban_development":
+        if domain == "audrey_hepburn":
             seed_cypher = """
-            MERGE (sustainableUrbanDev:Domain {name: "Sustainable Urban Development", description: "Integrated approach to creating environmentally responsible, economically viable, and socially equitable urban environments"});
+            MERGE (audreyHepburn:Person:Icon {name: "Audrey Hepburn", description: "Iconic actress, humanitarian, and cultural figure known for elegance, vulnerability, and authentic compassion"});
             
-            MERGE (urbanPlanning:TaxonomyCategory:UrbanPlanning {name: "Urban Planning", description: "Strategic design and organization of urban spaces", domain: "Sustainable Urban Development"});
-            MERGE (environmentalSystems:TaxonomyCategory:Environmental {name: "Environmental Systems", description: "Natural and built environmental interactions in urban contexts", domain: "Sustainable Urban Development"});
-            MERGE (socialEquity:TaxonomyCategory:Social {name: "Social Equity", description: "Fair distribution of resources and opportunities across urban populations", domain: "Sustainable Urban Development"});
-            MERGE (economicDevelopment:TaxonomyCategory:Economic {name: "Economic Development", description: "Sustainable economic growth and prosperity in urban areas", domain: "Sustainable Urban Development"});
-            MERGE (smartTechnology:TaxonomyCategory:Technology {name: "Smart Technology", description: "Digital and technological solutions for urban challenges", domain: "Sustainable Urban Development"});
-            MERGE (transportation:TaxonomyCategory:Transportation {name: "Transportation Systems", description: "Mobility infrastructure and services in urban environments", domain: "Sustainable Urban Development"});
-            MERGE (climateResilience:TaxonomyCategory:Climate {name: "Climate Resilience", description: "Urban adaptation and mitigation strategies for climate change", domain: "Sustainable Urban Development"});
+            MERGE (childhoodTrauma:PsychologicalDomain {name: "Childhood Trauma", description: "Wartime experiences, abandonment, and early adversity that shaped character"});
+            MERGE (attachmentPatterns:PsychologicalDomain {name: "Attachment Patterns", description: "Relationship dynamics, marriage patterns, and emotional connections"});
+            MERGE (screenPresence:PerformanceDomain {name: "Screen Presence", description: "Authentic vulnerability and emotional transparency in performance"});
+            MERGE (humanitarianWork:PhilanthropyDomain {name: "Humanitarian Work", description: "UNICEF advocacy and genuine compassion for children"});
+            MERGE (culturalIdentity:CulturalDomain {name: "Cultural Identity", description: "Dutch sensibilities balanced with Hollywood persona"});
+            MERGE (spiritualJourney:PhilosophicalDomain {name: "Spiritual Journey", description: "Quest for meaning, faith, and personal growth"});
             
-            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(urbanPlanning);
-            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(environmentalSystems);
-            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(socialEquity);
-            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(economicDevelopment);
-            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(smartTechnology);
-            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(transportation);
-            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(climateResilience);
-            
-            MERGE (urbanPlanning)-[:INFLUENCES {weight: 0.9, tag: "causal", analysis: "Urban planning decisions directly shape environmental outcomes through land use and infrastructure choices"}]->(environmentalSystems);
-            MERGE (transportation)-[:IMPACTS {weight: 0.8, tag: "causal", analysis: "Transportation systems significantly affect air quality, energy consumption, and urban form"}]->(environmentalSystems);
-            MERGE (economicDevelopment)-[:AFFECTS {weight: 0.7, tag: "causal", analysis: "Economic policies and development patterns influence social equity through job access and housing affordability"}]->(socialEquity);
-            MERGE (smartTechnology)-[:ENABLES {weight: 0.8, tag: "causal", analysis: "Smart city technologies can optimize resource use and improve service delivery across all urban systems"}]->(urbanPlanning);
-            """
-        else:
-            # Default seed data
-            seed_cypher = """
-            MERGE (biomimeticAlgo:Concept:ComputerScience {name: "Biomimetic Algorithms", description: "Algorithms inspired by biological processes in nature", domain: "Computer Science"});
-            MERGE (antColony:Concept:Biology {name: "Ant Colony Optimization", description: "Swarm intelligence based on pheromone trail optimization", domain: "Biology"});
-            MERGE (networkRouting:Concept:Telecommunications {name: "Network Routing Algorithms", description: "Methods for determining optimal paths in communication networks", domain: "Telecommunications"});
-            MERGE (collectiveIntelligence:Concept:Behavior {name: "Collective Intelligence", description: "Shared or group intelligence emerging from collaboration", domain: "Complex Systems"});
-            MERGE (biomimeticAlgo)-[:INSPIRED_BY {analysis: "Biomimetic algorithms take inspiration from the principles of collective intelligence found in biological systems."}]->(collectiveIntelligence);
-            MERGE (antColony)-[:DEMONSTRATES {analysis: "Ant colony optimization is a specific example of a system that demonstrates collective intelligence."}]->(collectiveIntelligence);
-            MERGE (biomimeticAlgo)-[:APPLIED_TO {analysis: "Biomimetic algorithms, such as ant colony optimization, are applied to solve problems like network routing."}]->(networkRouting);
-            MERGE (antColony)-[:SERVES_AS_MODEL_FOR {analysis: "The behavior of ant colonies serves as a model for the design of biomimetic algorithms like ACO."}]->(biomimeticAlgo);
+            MERGE (audreyHepburn)-[:SHAPED_BY {weight: 0.9, tag: "causal", analysis: "Childhood trauma profoundly influenced her empathy and emotional depth"}]->(childhoodTrauma);
+            MERGE (childhoodTrauma)-[:INFLUENCES {weight: 0.8, tag: "causal", analysis: "Early adversity created deep empathy that manifested in authentic screen vulnerability"}]->(screenPresence);
+            MERGE (childhoodTrauma)-[:MOTIVATES {weight: 0.9, tag: "causal", analysis: "Personal experience of suffering drove genuine compassion for children in need"}]->(humanitarianWork);
+            MERGE (attachmentPatterns)-[:AFFECTS {weight: 0.7, tag: "causal", analysis: "Relationship patterns influenced both personal life and ability to connect with audiences"}]->(screenPresence);
+            MERGE (culturalIdentity)-[:BALANCES {weight: 0.6, tag: "semantic", analysis: "European authenticity provided grounding against Hollywood artifice"}]->(screenPresence);
             """
         
-        try:
-            await self.mcp_client.execute_query(seed_cypher)
-            print("INFO: Seed nodes and relationships ensured via MCP.")
-        except Exception as e:
-            print(f"ERROR: Could not ensure seed data via MCP: {e}")
+            try:
+                await self.mcp_client.execute_query(seed_cypher)
+                print("INFO: Audrey Hepburn seed data created via MCP.")
+            except Exception as e:
+                print(f"ERROR: Could not create Audrey seed data via MCP: {e}")
             print("INFO: Continuing without seed data...")
 
         await self.update_current_graph_state_from_mcp()
@@ -258,6 +250,7 @@ class KnowledgeGraphGame:
         participant = self.participants[participant_index]
         current_graph_json = await self.get_graph_json_for_prompt()
         existing_node_names = []
+
         if "nodes" in current_graph_json:
             existing_node_names = [node["properties"].get("name") for node in current_graph_json["nodes"] if "properties" in node and "name" in node["properties"]]
 
@@ -270,18 +263,18 @@ class KnowledgeGraphGame:
 
 Your area of specialization: {participant.get('focus', 'General expertise in this domain')}
 
-While you should primarily contribute nodes and insights from your area of expertise, you are strongly encouraged to:
-1. **Create cross-domain relationships** - Connect your concepts to nodes created by other experts
-2. **Identify causal chains** - Look for cause-and-effect relationships, especially across disciplines
-3. **Bridge knowledge gaps** - Help connect isolated concepts from different domains
-4. **Include population segments and life contexts** - Consider specific groups of people and places where policies have real impact
+You are contributing to building an authentic psychological and cultural knowledge graph for **Digital Audrey Hepburn**. Focus on:
+1. **Psychological authenticity** - Deep understanding of her inner life and motivations
+2. **Causal relationships** - How experiences shaped her personality, choices, and impact
+3. **Cross-domain connections** - Link your expertise to other aspects of her life and character
+4. **Evidence-based insights** - Ground connections in documented facts, behaviors, and patterns
 """
 
         prompt = f"""
-# LLM Knowledge Graph Game - Turn {self.turn_count + 1}
-## Domain: Sustainable Urban Development
+# Digital Audrey Hepburn Context Building - Turn {self.turn_count + 1}
+## Domain: Audrey Hepburn Psychological & Cultural Authenticity
 
-You are participating in a collaborative knowledge graph building game as {participant['name']}.
+You are participating in building a comprehensive knowledge graph as {participant['name']} to create the most psychologically authentic AI representation of Audrey Hepburn ever developed.
 {expertise_section}
 
 ## Current Knowledge Graph Nodes
@@ -289,56 +282,48 @@ You are participating in a collaborative knowledge graph building game as {parti
 The knowledge graph currently contains nodes with these names:
 - {existing_nodes_str}
 
-## CRITICAL: Response Format Requirements
+## Mission & Objectives
 
-**YOU MUST RESPOND WITH VALID JSON ONLY. NO MARKDOWN, NO EXPLANATIONS OUTSIDE THE JSON.**
-
-Your response must be a single JSON object that starts with {{ and ends with }}. Do not include any text before or after the JSON.
-
-Example format:
-{{
-  "explanation": "Brief explanation...",
-  "nodes": [...],
-  "relationships": [...],
-  "future_directions": [...]
-}}
-
-## Game Rules & Objectives
-
-Your primary task is to expand the knowledge graph with a focus on **cross-domain connections** and **causal relationships**. 
+Your goal is to contribute deep, authentic insights about Audrey Hepburn that capture:
+- **Psychological complexity** - Her inner life, motivations, and emotional patterns
+- **Causal relationships** - How experiences shaped her character and choices
+- **Authentic voice** - Elements that would make AI responses genuinely "Audrey-like"
+- **Cultural context** - The historical and social forces that influenced her
 
 **Key Priorities:**
-1. **Causal Relationships**: Identify cause-and-effect chains (tag as "causal" with weight 0.1-1.0)
-2. **Semantic Relationships**: Create conceptual connections (tag as "semantic" with weight 0.1-1.0)
+1. **Causal Relationships**: Identify cause-and-effect chains in her psychological development (tag as "causal" with weight 0.1-1.0)
+2. **Semantic Relationships**: Create conceptual connections between aspects of her life (tag as "semantic" with weight 0.1-1.0)
 3. **Cross-Domain Bridges**: Connect your expertise area to other domains represented in the graph
-4. **Population & Context Focus**: Include specific population groups and life settings (work, home, recreation)
-5. **Practical Applications**: Focus on real-world, actionable concepts
+4. **Authentic Details**: Include specific behaviors, phrases, values, or patterns that define her uniqueness
+5. **Psychological Depth**: Focus on the "why" behind her actions and choices
 
-**Important**: Consider including specific **population groups** and **life contexts** that are central to your expertise:
-- Population segments: "Working families", "Elderly residents", "Low-income families", "College students"
-- Life contexts: "Affordable housing complexes", "Public transit hubs", "Community centers", "Industrial zones"
-- Specific policies/programs: "Section 8 housing", "Complete streets policies", "Green building standards"
+**Important**: Consider specific **life experiences**, **relationships**, **values**, and **behavioral patterns** that shaped her authentic self:
+- Specific traumas and how they manifested in her adult life
+- Relationship patterns and attachment styles
+- Performance techniques and emotional authenticity
+- Humanitarian motivations and spiritual beliefs
+- Cultural influences and identity formation
 
 **Contribution Guidelines:**
-- Add 1-3 new nodes, preferably from your expertise area
+- Add 1-3 new nodes that reveal deep aspects of her psychology or character
 - Create 2-4 relationships (mix of new connections and bridges to existing nodes)
 - Weight relationships: 0.8-1.0 (strong), 0.5-0.7 (moderate), 0.1-0.4 (weak)
-- Provide detailed analysis explaining WHY relationships exist
+- Provide detailed analysis explaining WHY relationships exist and their psychological significance
 
-## JSON Response Format (COPY THIS STRUCTURE EXACTLY)
+## Response Format
 
 {{
-  "explanation": "Brief explanation of your contribution and cross-domain connections...",
+  "explanation": "Brief explanation of your psychological insights and how they connect to authentic Audrey...",
   "nodes": [
     {{
-      "name": "Specific Node Name",
+      "name": "Specific Psychological/Cultural Concept",
       "labels": ["PrimaryCategory", "SecondaryCategory"],
       "properties": {{
-        "description": "Detailed description...",
-        "domain": "Sustainable Urban Development",
+        "description": "Detailed description of this aspect of Audrey's psychology/character...",
+        "persona": "Audrey Hepburn",
         "expertise_area": "{participant.get('expertise', 'General')}",
-        "analysis": "Why this concept is important and how it connects to the broader domain...",
-        "practical_applications": "Real-world applications or examples..."
+        "analysis": "Why this concept is important and how it contributes to Audrey's overall development and character...",
+        "examples": "Specific documented instances when she exhibited this behavior, perspective, or trait..."
       }}
     }}
   ],
@@ -346,22 +331,23 @@ Your primary task is to expand the knowledge graph with a focus on **cross-domai
     {{
       "source_node_name": "Existing Node Name",
       "target_node_name": "New or Existing Node Name", 
-      "type": "RELATIONSHIP_TYPE",
+      "type": "MEANINGFUL_RELATIONSHIP_NAME",  // e.g., "SHAPED_INTO", "INFLUENCED", "MANIFESTED_AS", "BALANCED_WITH"
       "properties": {{
-        "tag": "causal",
-        "weight": 0.8,
-        "analysis": "Detailed explanation of WHY this relationship exists and its strength...",
-        "cross_domain": true,
-        "evidence": "Supporting evidence or examples..."
+        "tag": "causal" or "semantic",
+        "weight": 0.0 to 1.0,
+        "analysis": "Detailed explanation of WHY this connection exists...",
+        "evidence": "Supporting evidence...",
+        "authenticity_impact": "How this contributes to authentic AI representation..."
       }}
     }}
   ],
   "future_directions": ["Specific suggestions for other experts to explore..."]
 }}
 
-REMEMBER: Respond with ONLY the JSON object. No markdown formatting, no explanations outside the JSON.
+Focus on creating a rich, psychologically authentic knowledge web that captures the essence of who Audrey truly was! 🎭✨
 """
         return prompt
+
     
     def extract_json_from_response(self, response_text: str) -> Optional[dict]:
         """Extract JSON from response text, handling markdown code blocks and various formats."""
@@ -641,28 +627,32 @@ REMEMBER: Respond with ONLY the JSON object. No markdown formatting, no explanat
 
 # Example usage and main game execution block
 if __name__ == "__main__":
-    # For demo purposes, we'll use the new setup
-    game = KnowledgeGraphGame()
+    # Ensure environment variables are set
+    required_vars = ["NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "MCP_SERVER_URL"]
+    missing_vars = [var for var in required_vars if not os.environ.get(var)]
     
-    # Set up the sustainable urban development participants
-    game.setup_sustainable_urban_development_participants()
-    
-    # Initialize with the correct domain
-    asyncio.run(game.initialize_graph(domain="sustainable_urban_development"))
-    
-    num_participants = len(game.participants)
-    if num_participants > 0:
-        print(f"INFO: Starting game with {num_participants} participants for {num_participants * 2} turns.")
-        results = asyncio.run(game.run_game(num_turns=num_participants * 2))
-        print("\n--- Game Results ---")
-        for result in results:
-            print(f"{result.get('participant')}: {result.get('message')}")
+    if missing_vars:
+        print(f"Error: Please set {', '.join(missing_vars)} environment variables.")
     else:
-        print("WARNING: No participants added to the game. Game will not run.")
+        game = KnowledgeGraphGame()
 
-    final_graph_json = asyncio.run(game.export_graph(format="json"))
-    print("\n--- Final Graph (JSON Representation) ---")
-    print(final_graph_json)
+        # Set up Audrey Hepburn context pod
+        game.setup_audrey_hepburn_participants()
 
-    game.close()
-    print("INFO: Game script finished.")
+        num_participants = len(game.participants)
+        if num_participants > 0:
+            print(f"INFO: Starting Digital Audrey context building with {num_participants} expert participants for {num_participants * 2} turns.")
+            results = asyncio.run(game.run_game(num_turns=num_participants * 2))
+            print("\n--- Digital Audrey Context Building Results ---")
+            for result in results:
+                print(f"{result.get('participant')}: {result.get('message')}")
+        else:
+            print("WARNING: No participants added to the game. Game will not run.")
+
+        final_graph_json = asyncio.run(game.export_graph(format="json"))
+        print("\n--- Final Audrey Hepburn Knowledge Graph ---")
+        print(f"Nodes: {len(final_graph_json.get('nodes', []))}")
+        print(f"Relationships: {len(final_graph_json.get('relationships', []))}")
+
+        game.close()
+        print("INFO: Digital Audrey context building finished.")
