@@ -1,6 +1,6 @@
 import json
 import httpx # For asynchronous HTTP requests
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union, AsyncGenerator
 import asyncio
 
 # Simple stopwords list for demo purposes
@@ -62,13 +62,25 @@ class EverychartMCPClient:
         response.raise_for_status()
         self.schema_cache = response.json()
         return self.schema_cache
+    
+    async def get_graph(self) -> Dict[str, Any]:
+        """Get the entire graph data from the server."""
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.server_url}/api/graph",
+                headers=self.headers
+            )
+        response.raise_for_status()
+        return response.json()
 
     async def execute_query(self, cypher: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a Cypher query against the graph database"""
+        payload = {"query": cypher, "params": params or {}}
+        print(f"DEBUG: Sending Cypher payload to /api/cypher: {payload}")
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.server_url}/api/cypher",
-                json={"query": cypher, "params": params or {}},
+                json=payload,
                 headers=self.headers
             )
         response.raise_for_status()
@@ -135,6 +147,16 @@ class EverychartMCPClient:
             "hub_nodes": top_hubs,
             "context": context_nodes[:max_nodes] # Final trim to max_nodes
         }
+    async def execute_json_to_cypher(self, payload: Dict) -> httpx.Response:
+        """Send a JSON payload to the server for translation to Cypher and execution."""
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.server_url}/api/json-to-cypher",
+                json=payload,
+                headers=self.headers
+            )
+        response.raise_for_status()
+        return response
 
     async def subscribe_to_context_stream(self) -> AsyncGenerator[Dict[str, Any], None]:
         """

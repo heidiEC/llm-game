@@ -1,711 +1,474 @@
 import os
+import json
+import time
+from typing import Dict, List, Optional, Union, Any
+import asyncio
 from neo4j import GraphDatabase
 from anthropic import Anthropic
-import ollama # Import ollama client
-import re 
-import json
-import random
-import dotenv
-import time 
-import redis
-import certifi 
-import hashlib 
-from datetime import datetime 
+import ollama
+import hashlib
+import httpx
+from mcp_client import EverychartMCPClient  # Import the client
+from dotenv import load_dotenv
+load_dotenv()
 
-dotenv.load_dotenv()
-
-# --- Attempt to set SSL_CERT_FILE programmatically using certifi ---
-# This is crucial for ensuring Python can find SSL certificates, especially on macOS
-try:
-    certifi_path = certifi.where()
-    os.environ['SSL_CERT_FILE'] = certifi_path
-    os.environ['REQUESTS_CA_BUNDLE'] = certifi_path # For other libs like requests
-    print(f"INFO: Programmatically set SSL_CERT_FILE to: {certifi_path}")
-except ImportError:
-    print("WARNING: certifi package not found. SSL connections might fail. Please install certifi.")
-except Exception as e:
-    print(f"ERROR: Could not set SSL_CERT_FILE from certifi: {e}")
-# --- End of SSL_CERT_FILE setting ---
-
-
-
-# Neo4j setup
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
-
-# Redis setup
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-
-# Anthropic API setup
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL = "claude-3-5-sonnet-20240620"  # Default for Anthropic
-OLLAMA_MODEL = "llama3:latest" # Default for Ollama, ensure this model is pulled in Ollama
-
+# --- Environment Variables (Make sure these are set) ---
+#NEO4J_URI = os.environ.get("NEO4J_URI")
+#NEO4J_USER = os.environ.get("NEO4J_USER")
+#NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3:latest")
+MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://localhost:8000")
 
 class KnowledgeGraphGame:
     def __init__(self):
-        # Connect to Neo4j
-        self.driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-        
-        # Connect to Redis
-        try:
-            self.redis = redis.Redis(
-                host=REDIS_HOST,
-                port=REDIS_PORT,
-                password=REDIS_PASSWORD if REDIS_PASSWORD else None,
-                db=REDIS_DB,
-                decode_responses=True  # Automatically decode responses to strings
-            )
-            self.redis.ping()  # Test connection
-            self.redis_available = True
-            print("Connected to Redis successfully.")
-        except redis.ConnectionError:
-            self.redis_available = False
-            print("WARNING: Could not connect to Redis. Caching will be disabled.")
-        
-        # Initialize Anthropic client if key is available
+        # Connect to Neo4j (still used for initial setup and potentially direct access)
+        #self.driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+
+        # Initialize Anthropic client
         if ANTHROPIC_API_KEY:
             self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
         else:
             self.client = None
-            print("WARNING: ANTHROPIC_API_KEY not set. LLM functionality will not work.")
-        
+            print("WARNING: ANTHROPIC_API_KEY not set.")
+
         # Initialize Ollama client
         try:
             self.ollama_client = ollama.Client()
-            # Test connection by listing local models (or a more lightweight ping if available)
-            self.ollama_client.list() 
+            self.ollama_client.list()
             self.ollama_available = True
-            print("INFO: Ollama client initialized and connected.")
+            print("INFO: Ollama client initialized.")
         except Exception as e:
             self.ollama_client = None
             self.ollama_available = False
-            print(f"WARNING: Could not initialize Ollama client: {e}. Ollama models will not work.")
-        
+            print(f"WARNING: Could not initialize Ollama client: {e}")
+
+        # Initialize MCP Client
+        self.mcp_client = EverychartMCPClient(MCP_SERVER_URL)
+
         # Initialize game state
         self.turn_count = 0
         self.participants = []
-        self.current_graph_state = {}
-        
-        # Try to load game state from Redis if available
-        self.load_game_state_from_redis()
-        # If after loading from Redis, current_graph_state is still empty,
-        # (e.g. Redis was down, or it's the very first run with an empty Redis)
-        # then populate it from the Neo4j database.
-        if not self.current_graph_state:
-            print("INFO: current_graph_state is empty after attempting Redis load. Updating from Neo4j DB.")
-            self.update_graph_state() # This will also save to Redis if available
-    
-    def load_game_state_from_redis(self):
-        """Load game state from Redis if available"""
-        if not self.redis_available:
-            return False
-        
-        try:
-            # Load turn count
-            turn_count = self.redis.get("game:turn_count")
-            if turn_count:
-                self.turn_count = int(turn_count)
-            
-            # Load participants
-            participants_json = self.redis.get("game:participants")
-            if participants_json:
-                self.participants = json.loads(participants_json)
-            
-            # Load graph state
-            graph_state_json = self.redis.get("game:graph_state")
-            if graph_state_json:
-                self.current_graph_state = json.loads(graph_state_json)
-            
-            if turn_count or participants_json or graph_state_json:
-                print("INFO: Game state loaded from Redis.")
-            return True
-        except Exception as e:
-            print(f"Error loading game state from Redis: {str(e)}")
-            return False
-    
-    def save_game_state_to_redis(self):
-        """Save current game state to Redis"""
-        if not self.redis_available:
-            return False
-        
-        try:
-            # Save turn count
-            self.redis.set("game:turn_count", self.turn_count)
-            
-            # Save participants
-            self.redis.set("game:participants", json.dumps(self.participants))
-            
-            # Save graph state
-            self.redis.set("game:graph_state", json.dumps(self.current_graph_state))
-            
-            print("INFO: Game state saved to Redis.")
-            return True
-        except Exception as e:
-            print(f"Error saving game state to Redis: {str(e)}")
-            return False
-    
-    def cache_llm_response(self, prompt, response, participant_name, model):
-        """Cache an LLM response in Redis"""
-        if not self.redis_available:
-            return False
-        
-        try:
-            # Create a cache key based on prompt hash
-            prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-            cache_key = f"llm:response:{prompt_hash}"
-            
-            # Store the response with metadata
-            cache_data = {
-                "response": response,
-                "participant": participant_name,
-                "model": model,
-                "timestamp": json.dumps({"$date": int(time.time() * 1000)})
-            }
-            
-            # Store in Redis with expiration (e.g., 24 hours)
-            self.redis.setex(
-                cache_key,
-                86400,  # 24 hours in seconds
-                json.dumps(cache_data)
-            )
-            
-            return True
-        except Exception as e:
-            print(f"Error caching LLM response: {str(e)}")
-            return False
-    
-    def get_cached_llm_response(self, prompt):
-        """Get a cached LLM response from Redis if available"""
-        if not self.redis_available:
-            return None
-        
-        try:
-            # Create the same cache key based on prompt hash
-            prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-            cache_key = f"llm:response:{prompt_hash}"
-            
-            # Try to get from Redis
-            cached_data = self.redis.get(cache_key)
-            if cached_data:
-                return json.loads(cached_data)
-            
-            return None
-        except Exception as e:
-            print(f"Error retrieving cached LLM response: {str(e)}")
-            return None
-    
-    def initialize_graph(self, force_reset=False):
-        """
-        Ensure the foundational knowledge graph nodes and relationships exist.
-        If force_reset is True, clears the entire graph first.
-        Uses MERGE to be idempotent for the seed data.
-        """
-        with self.driver.session() as session:
-            if force_reset:
-                print("INFO: Force reset requested. Clearing entire graph...")
-                session.run("MATCH (n) DETACH DELETE n")
-            
-            print("INFO: Ensuring foundational seed nodes and relationships exist using MERGE...")
-            # Use MERGE for initial nodes and relationships to make it idempotent
-            session.run("""
-            MERGE (biomimeticAlgo:Concept:ComputerScience {name: "Biomimetic Algorithms"})
-            ON CREATE SET
-              biomimeticAlgo.description = "Algorithms inspired by biological processes in nature",
-              biomimeticAlgo.domain = "Computer Science"
-            MERGE (antColony:Concept:Biology {name: "Ant Colony Optimization"})
-            ON CREATE SET
-              antColony.description = "Swarm intelligence based on pheromone trail optimization",
-              antColony.domain = "Biology"
-            MERGE (networkRouting:Concept:Telecommunications {name: "Network Routing Algorithms"})
-            ON CREATE SET
-              networkRouting.description = "Methods for determining optimal paths in communication networks",
-              networkRouting.domain = "Telecommunications"
-            MERGE (collectiveIntelligence:Concept:Behavior {name: "Collective Intelligence"})
-            ON CREATE SET
-              collectiveIntelligence.description = "Shared or group intelligence emerging from collaboration",
-              collectiveIntelligence.domain = "Complex Systems"
+        self.current_graph_state = {"nodes": {}, "relationships": {}}
 
-            MERGE (biomimeticAlgo)-[r1:INSPIRED_BY]->(collectiveIntelligence)
-            ON CREATE SET r1.description = "Takes design principles from"
-            MERGE (antColony)-[r2:DEMONSTRATES]->(collectiveIntelligence)
-            ON CREATE SET r2.description = "Shows patterns of"
-            MERGE (biomimeticAlgo)-[r3:APPLIED_TO]->(networkRouting)
-            ON CREATE SET r3.description = "Used to optimize"
-            MERGE (antColony)-[r4:SERVES_AS_MODEL_FOR]->(biomimeticAlgo)
-            ON CREATE SET r4.description = "Provides algorithmic framework for"
-            """)
-            
-        self.update_graph_state() # Refresh in-memory state and save to Redis
-        if force_reset:
-            print("Knowledge graph reset and initialized with starting seed.")
-        else:
-            print("Foundational seed nodes and relationships ensured (created if not existing).")
-        
-    def update_graph_state(self):
-        """Update the current state of the graph by querying Neo4j"""
+        self.load_participants()
+        asyncio.run(self.initialize_graph())
+        asyncio.run(self.update_current_graph_state_from_mcp())
+
+    def load_participants(self):
+        print("INFO: Participants managed in-memory.")
+        pass
+
+    def save_participants(self):
+        pass
+
+    async def update_current_graph_state_from_mcp(self):
+        """Fetch the current graph state from the MCP server."""
+        graph_data = await self.mcp_client.get_graph()
+        nodes = {}
+        for node in graph_data.get("nodes", []):
+            nodes[node['id']] = {"properties": node['properties'], "labels": node['labels'], "id": node['id']}
+
+        relationships = {}
+        for rel in graph_data.get("relationships", []):
+            relationships[(rel['startNodeId'], rel['endNodeId'], rel['type'])] = rel['properties']
+
+        self.current_graph_state = {
+            "nodes": nodes,
+            "relationships": relationships
+        }
+
+    async def fetch_graph_state_from_neo4j(self):
+        """Fallback to fetch graph state directly from Neo4j."""
+        print("WARNING: Falling back to fetch graph state directly from Neo4j.")
         with self.driver.session() as session:
-            # Get all nodes
-            nodes_result = session.run("""
-            MATCH (n)
-            RETURN n, labels(n) as labels, elementId(n) as element_id
-            """)
-            
             nodes = {}
+            nodes_result = session.run("MATCH (n) RETURN elementId(n) AS id, n, labels(n) AS labels")
             for record in nodes_result:
-                node = record["n"]
-                node_id = record["element_id"] # Use element_id
-                node_labels = record["labels"]
-                
-                nodes[node_id] = {
-                    "id": node_id, # This 'id' is now the elementId string
-                    "labels": node_labels,
-                    **dict(node)
-                }
-            
-            # Get all relationships
-            rels_result = session.run("""
-            MATCH ()-[r]->()
-            RETURN elementId(r) as element_id, type(r) as type, elementId(startNode(r)) as start_node_element_id, elementId(endNode(r)) as end_node_element_id, properties(r) as props
-            """)
-            
+                nodes[record["id"]] = {"properties": dict(record["n"]), "labels": record["labels"], "id": record["id"]}
+
             relationships = {}
+            rels_result = session.run("MATCH ()-[r]->() RETURN elementId(r) AS id, r, elementId(startNode(r)) AS source, elementId(endNode(r)) AS target, type(r) AS type")
             for record in rels_result:
-                rel_id = record["element_id"] # Use element_id
-                relationships[rel_id] = {
-                    "id": rel_id, # This 'id' is now the elementId string
-                    "type": record["type"],
-                    "start": record["start_node_element_id"],
-                    "end": record["end_node_element_id"],
-                    "properties": record["props"]
-                }
-            
-            self.current_graph_state = {
-                "nodes": nodes,
-                "relationships": relationships
-            }
-            
-            # Save updated state to Redis
-            self.save_game_state_to_redis()
-    
+                relationships[record["id"]] = {"properties": dict(record["r"]), "source": record["source"], "target": record["target"], "type": record["type"], "id": record["id"]}
+
+            self.current_graph_state = {"nodes": nodes, "relationships": relationships}
+            print("INFO: Graph state fetched directly from Neo4j.")
+
+    async def initialize_graph(self, force_reset=False):
+        """Ensure the foundational knowledge graph nodes and relationships exist via MCP."""
+        if force_reset:
+            print("INFO: Force reset requested. Clearing entire graph via MCP...")
+            try:
+                response = await self.mcp_client.execute_query("MATCH (n) DETACH DELETE n")
+                print("INFO: Graph cleared via MCP.")
+            except Exception as e:
+                print(f"ERROR: Could not clear graph via MCP: {e}")
+
+        print("INFO: Ensuring foundational seed nodes and relationships exist via MCP...")
+        seed_cypher = """
+        MERGE (biomimeticAlgo:Concept:ComputerScience {name: "Biomimetic Algorithms", description: "Algorithms inspired by biological processes in nature", domain: "Computer Science"});
+        MERGE (antColony:Concept:Biology {name: "Ant Colony Optimization", description: "Swarm intelligence based on pheromone trail optimization", domain: "Biology"});
+        MERGE (networkRouting:Concept:Telecommunications {name: "Network Routing Algorithms", description: "Methods for determining optimal paths in communication networks", domain: "Telecommunications"});
+        MERGE (collectiveIntelligence:Concept:Behavior {name: "Collective Intelligence", description: "Shared or group intelligence emerging from collaboration", domain: "Complex Systems"});
+        MERGE (biomimeticAlgo)-[:INSPIRED_BY {analysis: "Biomimetic algorithms take inspiration from the principles of collective intelligence found in biological systems."}]->(collectiveIntelligence);
+        MERGE (antColony)-[:DEMONSTRATES {analysis: "Ant colony optimization is a specific example of a system that demonstrates collective intelligence."}]->(collectiveIntelligence);
+        MERGE (biomimeticAlgo)-[:APPLIED_TO {analysis: "Biomimetic algorithms, such as ant colony optimization, are applied to solve problems like network routing."}]->(networkRouting);
+        MERGE (antColony)-[:SERVES_AS_MODEL_FOR {analysis: "The behavior of ant colonies serves as a model for the design of biomimetic algorithms like ACO."}]->(biomimeticAlgo)
+        """
+        try:
+            await self.mcp_client.execute_query(seed_cypher)
+            print("INFO: Seed nodes and relationships ensured via MCP.")
+        except Exception as e:
+            print(f"ERROR: Could not ensure seed data via MCP: {e}")
+            print("INFO: Continuing without seed data...")
+
+        await self.update_current_graph_state_from_mcp()
+
     def add_llm_participant(self, name, model_name=None, client_type="anthropic"):
-        """Add an LLM participant to the game"""
-        # Check if participant with this name already exists to avoid duplicates if loading from Redis
         for p in self.participants:
             if p["name"] == name:
-                print(f"INFO: Participant '{name}' already exists. Not adding again.")
+                print(f"INFO: Participant '{name}' already exists.")
                 return len(self.participants)
-            
-        default_model = CLAUDE_MODEL
+
+        default_model = os.environ.get("CLAUDE_MODEL")
         if client_type == "ollama":
             default_model = OLLAMA_MODEL
 
         participant = {
-            "id": len(self.participants) + 1, # This ID might not be unique if participants are loaded then more added
+            "id": len(self.participants) + 1,
             "name": name,
-            "type": "LLM", # Could also be "OllamaLLM" or "AnthropicLLM" if more distinction needed
+            "type": "LLM",
             "model": model_name or default_model,
-            "client_type": client_type, # "anthropic" or "ollama"
+            "client_type": client_type,
             "contributions": []
         }
         self.participants.append(participant)
         print(f"INFO: Added participant: {name}")
-        
-        # Save updated participants to Redis
-        self.save_game_state_to_redis()
-        
         return len(self.participants)
-    
+
     def add_agent_participant(self, name="ResearchAgent"):
-        """Add an Agent participant to the game"""
-        # Check if agent already exists
         for p in self.participants:
             if p["name"] == name and p["type"] == "Agent":
-                print(f"INFO: Agent participant '{name}' already exists. Not adding again.")
+                print(f"INFO: Agent participant '{name}' already exists.")
                 return len(self.participants)
 
         agent = {
             "id": len(self.participants) + 1,
             "name": name,
-            "type": "Agent", # New type
-            "contributions": [] # To store its actions/findings
+            "type": "Agent",
+            "contributions": []
         }
         self.participants.append(agent)
         print(f"INFO: Added Agent participant: {name}")
-        self.save_game_state_to_redis()
         return len(self.participants)
 
-    def get_graph_cypher_representation(self):
-        """Get the current graph state as a series of Cypher commands"""
-        with self.driver.session() as session:
-            # Get all nodes
-            nodes_result = session.run("""
-            MATCH (n)
-            RETURN n, labels(n) as labels, elementId(n) as element_id
-            """)
-            
-            cypher_commands = ["// Nodes"]
-            for record in nodes_result:
-                node = record["n"]
-                node_labels = record["labels"]
-                
-                # Format properties
-                props = dict(node) # Make a mutable copy
-                props_str_parts = []
-                for k, v_val in props.items():
-                    if isinstance(v_val, str):
-                        escaped_v = v_val.replace("'", "\\'") # Escape single quotes
-                        props_str_parts.append(f"{k}: '{escaped_v}'")
-                    elif isinstance(v_val, bool):
-                        props_str_parts.append(f"{k}: {str(v_val).lower()}") # Cypher uses lowercase true/false
-                    else: # Numbers, etc.
-                        props_str_parts.append(f"{k}: {v_val}")
-                props_str = ", ".join(props_str_parts)
-                
-                # Create node creation command
-                labels_str = ":" + ":".join(node_labels) if node_labels else ""
-                cypher_commands.append(f"// Node with elementId: {record['element_id']}\nCREATE (node{labels_str} {{{props_str}}})")
-            
-            # Get all relationships
-            cypher_commands.append("\n// Relationships")
-            rels_result = session.run("""
-            MATCH (a)-[r]->(b)
-            RETURN elementId(a) as a_element_id, type(r) as type, properties(r) as props, elementId(b) as b_element_id
-            """)
-            
-            for record in rels_result:
-                a_element_id = record["a_element_id"] 
-                b_element_id = record["b_element_id"] 
-                rel_type = record["type"]
-                props = record["props"] 
+    async def get_graph_json_for_prompt(self):
+        """Get the current graph state as JSON from the MCP server."""
+        try:
+            graph_data = await self.mcp_client.get_graph()
+            return {
+                "nodes": [{"id": node['id'], "labels": node['labels'], "properties": node['properties']} for node in graph_data.get("nodes", [])],
+                "relationships": [{"id": rel['id'], "type": rel['type'], "source": rel['startNodeId'], "target": rel['endNodeId'], "properties": rel.get("properties", {})} for rel in graph_data.get("relationships", [])],
+            }
+        except httpx.HTTPStatusError as e:
+            print(f"ERROR: Could not fetch graph JSON from MCP: {e}")
+            return {"error": str(e)}
+        except httpx.RequestError as e:
+            print(f"ERROR: Could not connect to MCP to fetch graph JSON: {e}")
+            return {"error": str(e)}
 
-                if props:
-                    props_str_parts = []
-                    for k, v_val in props.items():
-                        if isinstance(v_val, str):
-                            escaped_v = v_val.replace("'", "\\'")
-                            props_str_parts.append(f"{k}: '{escaped_v}'")
-                        elif isinstance(v_val, bool):
-                            props_str_parts.append(f"{k}: {str(v_val).lower()}")
-                        else: # Numbers, etc.
-                            props_str_parts.append(f"{k}: {v_val}")
-                    props_str = " {" + ", ".join(props_str_parts) + "}"
-                else:
-                    props_str = ""
-                
-                cypher_commands.append(f"// Relationship from elementId {a_element_id} to {b_element_id}\n// MATCH (nodeA), (nodeB) WHERE elementId(nodeA) = '{a_element_id}' AND elementId(nodeB) = '{b_element_id}' CREATE (nodeA)-[:{rel_type}{props_str}]->(nodeB)")
-            
-            return "\n".join(cypher_commands)
-    
-    def generate_prompt_for_llm(self, participant_index):
-        """Generate a prompt for the LLM to contribute to the knowledge graph"""
+    async def generate_prompt_for_llm(self, participant_index):
+        """Generate a prompt for the LLM to contribute in JSON format, including the current graph."""
         participant = self.participants[participant_index]
-        
-        # Get the current graph state
-        cypher_representation = self.get_graph_cypher_representation()
-        
-        # Generate a prompt based on game rules
+        current_graph_json = await self.get_graph_json_for_prompt()
+        existing_node_names = []
+        if "nodes" in current_graph_json:
+            existing_node_names = [node["properties"].get("name") for node in current_graph_json["nodes"] if "properties" in node and "name" in node["properties"]]
+
+        existing_nodes_str = "\n- ".join(sorted([name for name in existing_node_names if name])) if existing_node_names else "No nodes yet."
+
         prompt = f"""
         # LLM Knowledge Graph Game - Turn {self.turn_count + 1}
-        
+
         You are participating in a collaborative knowledge graph building game as {participant['name']}.
-        
-        ## Current Knowledge Graph
-        
-        The knowledge graph currently contains these nodes and relationships (in Cypher format):
-        
-        
-        {cypher_representation}
-        
-        
+
+        ## Current Knowledge Graph Nodes
+
+        The knowledge graph currently contains nodes with these names:
+        - {existing_nodes_str}
+
         ## Game Rules
-        
-        Your primary task is to expand the existing knowledge graph.
-        - **Identify existing nodes** from the "Current Knowledge Graph" that you want to connect your new information to. You can identify them by their properties (e.g., name).
-        - Then, make ONE of the following types of contributions:
-        
-        1. 1-3 new nodes connected to existing nodes
-        2. New relationships between existing nodes
-        3. Labels to nodes when recognizing patterns
-        4. Properties to existing nodes or relationships
-        
-        **Important for Cypher:**
-        - To connect to an existing node, use a `MATCH` clause. For example: `MATCH (existingNode:Concept {{name: "Ant Colony Optimization"}})`
-        - Then, use `CREATE` or `MERGE` for your new additions, linking them to `existingNode`. `MERGE` is preferred for nodes/relationships that might already exist to avoid duplicates.
-        - **VERY IMPORTANT: If your contribution involves multiple steps (e.g., creating a node, then matching another node, then creating a relationship between them), break EACH step into a separate Cypher command ending with a semicolon (`;`).**
-        - **Example of a multi-step contribution broken down:**
-        - `MERGE (newNode:Concept {{name: "New Idea"}});`
-        - `MATCH (existingNode:Concept {{name: "Old Idea"}}), (newNode:Concept {{name: "New Idea"}}) MERGE (newNode)-[:RELATES_TO]->(existingNode);`
-        - **Avoid complex single Cypher statements that perform writes (CREATE/MERGE) and then reads (MATCH) without being separated by semicolons. Prefer simpler, semicolon-separated commands.**
-        - Your Cypher commands should ONLY include the new elements or modifications you are adding. Do NOT repeat the Cypher for the existing graph.
-        
+
+        Your primary task is to expand the existing knowledge graph, focusing not just on what is related, but also on **why** things are connected. When you propose new nodes or relationships, please tag each relationship in the 'properties' as either "semantic" or "causal" and assign it a 'weight' between 0.0 and 1.0 indicating the strength or likelihood of the connection. Also include an 'analysis' property for both new nodes and relationships.
+
+        You can contribute by:
+
+        1. Adding 1-3 new nodes connected to existing nodes.
+        2. Adding new relationships between existing nodes.
+
         Your contribution should:
-        - Be connected to at least one existing element in the graph
-        - Provide novel, creative, and accurate information
-        - Explore interesting, non-obvious, yet relevant connections
-        - Reflect your unique perspective or "expertise" as {participant['name']}
-        
+        - Be connected to at least one existing node in the graph (by name).
+        - Provide novel, creative, and accurate information.
+        - Explore interesting, non-obvious, yet relevant connections.
+        - Reflect your unique perspective or "expertise" as {participant['name']}.
+
         ## Response Format
+
+        Please respond with a JSON object:
+
         
-        Please respond with:
+        {{
+          "explanation": "A brief explanation...",
+          "nodes": [
+            {{
+              "name": "Name of new node 1",
+              "labels": ["Category1", "Category2"],
+              "properties": {{
+                "description": "...",
+                "analysis": "Analysis of this entity.",
+                // ... other properties
+              }}
+            }},
+            // ... more new nodes
+          ],
+          "relationships": [
+            {{
+              "source_node_name": "Name of existing node",
+              "target_node_name": "Name of node",
+              "type": "RELATIONSHIP_TYPE",
+              "properties": {{
+                "tag": "semantic" or "causal",
+                "weight": 0.0 to 1.0,
+                "analysis": "Analysis of the relationship.",
+                // ... other properties
+              }}
+            }},
+            // ... more new relationships
+          ],
+          "future_directions": ["Suggestion 1", "Suggestion 2"]
+        }}
         
-        1. A brief explanation of what you're adding and why it's interesting (2-3 sentences)
-        2. The Cypher commands for **your additions only**, using the following format:
-        
-        ```cypher
-        YOUR CYPHER COMMANDS FOR ADDITIONS HERE
-        ```
-        
-        3. Suggest 1-2 potential directions for future participants to explore
-        
-        Be insightful and aim to enrich the graph with valuable, interconnected knowledge!
+
+        Ensure that you reference existing nodes by their `"name"` property when defining relationships. Be insightful and aim to enrich the graph with valuable, interconnected knowledge!
         """
-        
         return prompt
-    
-    def process_llm_turn(self, participant_index):
-        """Process a turn for an LLM participant"""
+
+    def extract_json_from_response(self, response_text: str) -> Optional[dict]:
+        """Extract JSON from response text, handling markdown code blocks."""
+        import re
         
+        # First try direct JSON parsing
+        try:
+            return json.loads(response_text.strip())
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to extract JSON from markdown code blocks
+        json_pattern = r'(?:json)?\s*(\{.*?\})\s*'
+        matches = re.findall(json_pattern, response_text, re.DOTALL | re.IGNORECASE)
+        
+        for match in matches:
+            try:
+                return json.loads(match)
+            except json.JSONDecodeError:
+                continue
+        
+        # Try to find JSON-like content without code blocks
+        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        matches = re.findall(json_pattern, response_text, re.DOTALL)
+        
+        for match in matches:
+            try:
+                return json.loads(match)
+            except json.JSONDecodeError:
+                continue
+        
+        return None
+
+    async def process_llm_turn(self, participant_index):
+        """Process a turn for an LLM participant, sending JSON to MCP server."""
         participant = self.participants[participant_index]
-        prompt = self.generate_prompt_for_llm(participant_index)
-        response_text = None
-        
+        prompt = await self.generate_prompt_for_llm(participant_index)
+        llm_response_json = None
+
         try:
             if participant["client_type"] == "anthropic":
                 if not self.client:
                     raise Exception("Anthropic client not available.")
-                # --- Call Claude API with Retry Logic ---
-                max_retries = 3
-                retry_delay = 5  # seconds
-                api_response_obj = None
-                for attempt in range(max_retries):
-                    try:
-                        api_response_obj = self.client.messages.create(
-                            model=participant["model"],
-                            max_tokens=4000,
-                            temperature=0.8,
-                            messages=[ {"role": "user", "content": prompt} ]
-                        )
-                        break # Success, exit retry loop
-                    except (self.client.APIConnectionError, self.client.RateLimitError, self.client.APIStatusError) as e:
-                        print(f"WARNING: Anthropic API error for {participant['name']} (Attempt {attempt + 1}/{max_retries}): {type(e).__name__} - {e}")
-                        if attempt < max_retries - 1:
-                            print(f"Retrying in {retry_delay} seconds...")
-                            time.sleep(retry_delay)
-                            retry_delay *= 2 # Exponential backoff
-                        else:
-                            print(f"ERROR: Max retries reached for Anthropic API call for {participant['name']}.")
-                            raise # Re-raise the last exception
-                if api_response_obj is None:
-                    raise Exception("Anthropic API response was None after retries.")
-                response_text = api_response_obj.content[0].text
-                # --- End of Anthropic API Call ---
+                response = self.client.messages.create(
+                    model=participant["model"],
+                    max_tokens=4000,
+                    temperature=0.8,
+                    messages=[{"role": "user", "content": str(prompt)}]
+                )
+                response_text = response.content[0].text
+                llm_response_json = self.extract_json_from_response(response_text)
+                if not llm_response_json:
+                    print(f"WARNING: Could not decode JSON from Anthropic for {participant['name']}: {response_text[:200]}...")
+                    return {"participant": participant["name"], "success": False, "message": "Could not decode JSON response."}
 
             elif participant["client_type"] == "ollama":
                 if not self.ollama_available or not self.ollama_client:
                     raise Exception("Ollama client not available.")
-                
                 print(f"INFO: Sending prompt to Ollama model: {participant['model']} for participant {participant['name']}")
-                # Using ollama.chat for better instruction following
-                # Note: Ollama can be slow, especially for larger contexts or complex prompts.
-                # No explicit retry logic here yet, but can be added similarly to Anthropic.
                 ollama_response = self.ollama_client.chat(
                     model=participant['model'],
-                    messages=[{'role': 'user', 'content': prompt}],
-                    stream=False # Keep it simple for now, get full response
-                    # options={"temperature": 0.7} # Example of setting options
+                    messages=[{'role': 'user', 'content': str(prompt)}],
+                    stream=False
                 )
                 if ollama_response and 'message' in ollama_response and 'content' in ollama_response['message']:
                     response_text = ollama_response['message']['content']
+                    llm_response_json = self.extract_json_from_response(response_text)
+                    if not llm_response_json:
+                        print(f"WARNING: Could not decode JSON from Ollama for {participant['name']}: {response_text[:200]}...")
+                        return {"participant": participant["name"], "success": False, "message": "Could not decode JSON response."}
                 else:
                     raise Exception("Invalid or empty response structure from Ollama.")
             else:
-                raise ValueError(f"Unknown client type: {participant['client_type']} for participant {participant['name']}")
+                raise ValueError(f"Unknown client type: {participant['client_type']}")
 
-            if not response_text:
-                 raise Exception("LLM response text is empty.")
+            if llm_response_json:
+                print(f"\nDEBUG: LLM ({participant['name']}) JSON response:\n'''\n{json.dumps(llm_response_json, indent=2)}\n'''")
+                try:
+                    # Send JSON to MCP server to update the graph
+                    response = await self.mcp_client.execute_json_to_cypher(llm_response_json)
+                    mcp_response = response.json()
+                    if mcp_response.get("success"):
+                        print(f"INFO: Graph updated via MCP for {participant['name']}.")
+                        await self.update_current_graph_state_from_mcp()
+                        self.turn_count += 1
+                        contribution = {
+                            "turn": self.turn_count,
+                            "explanation": llm_response_json.get("explanation"),
+                            "json_payload": llm_response_json,
+                            "mcp_response": mcp_response,
+                            "success": True,
+                            "message": "Graph updated via MCP."
+                        }
+                        participant["contributions"].append(contribution)
+                        return {"participant": participant["name"], "success": True, "message": "Graph updated via MCP.", "mcp_response": mcp_response, "llm_response": llm_response_json}
+                    else:
+                        print(f"WARNING: MCP server reported failure: {mcp_response.get('message')}")
+                        return {"participant": participant["name"], "success": False, "message": f"MCP server failed to update graph: {mcp_response.get('message')}", "mcp_response": mcp_response, "llm_response": llm_response_json}
+                except httpx.RequestError as e:
+                    print(f"ERROR: Could not communicate with MCP server: {e}")
+                    return {"participant": participant["name"], "success": False, "message": f"Error communicating with MCP server: {e}"}
+                except httpx.HTTPStatusError as e:
+                    print(f"HTTP error from MCP server: {e.response.status_code} - {e.response.text}")
+                    return {"participant": participant["name"], "success": False, "message": f"HTTP error from MCP server: {e.response.status_code}."}
+            else:
+                return {"participant": participant["name"], "success": False, "message": "No valid JSON response from LLM."}
 
-            print(f"\nDEBUG: LLM ({participant['name']} using {participant['model']}) raw response text:\n'''\n{response_text}\n'''")
-            
-            # Extract Cypher commands from response
-            # Regex to capture content within a markdown Cypher block ```cypher ... ```
-            # or after a specific comment line // Your Cypher commands here
-            cypher_block_match = re.search(
-                r"```cyph?er\n(.*?)\n```|// Your Cypher commands here\n(.*?)(?=\n\n\n3\.|\Z)", # Made 'p' in cypher optional
-                response_text,
-                re.DOTALL | re.IGNORECASE)
-            
-            cypher_commands = None
-            if cypher_block_match:
-                if cypher_block_match.group(1): # Markdown block matched
-                    cypher_commands = cypher_block_match.group(1).strip()
-                elif cypher_block_match.group(2): # Comment block matched
-                    cypher_commands = cypher_block_match.group(2).strip()
-            
-            if cypher_commands: # If cypher_commands is not None and not empty after strip
-                print(f"DEBUG: Extracted Cypher for {participant['name']}:\n'''\n{cypher_commands}\n'''")
-                
-                # Execute Cypher commands
-                success, message = self.execute_cypher_commands(cypher_commands)
-                
-                # Record the contribution
-                contribution = {
-                    "turn": self.turn_count,
-                    "explanation": response_text, # Store the full response for context
-                    "cypher": cypher_commands,
-                    "success": success,
-                    "message": message
-                }
-                participant["contributions"].append(contribution)
-                print(f"DEBUG: Cypher execution for {participant['name']} - Success: {success}, Message: {message}")
-                
-                # Update game state
-                if success:
-                    self.update_graph_state() # This will also save to Redis
-                    self.turn_count += 1
-                    self.save_game_state_to_redis() # Explicitly save turn_count if it changed
-                
-                return {
-                    "participant": participant["name"],
-                    "success": success,
-                    "message": message,
-                    "response": response_text,
-                    "cypher": cypher_commands
-                }
-            else: # No Cypher block found or it was empty
-                print(f"DEBUG: Could not extract valid Cypher commands for {participant['name']}.")
-                return {
-                    "participant": participant["name"],
-                    "success": False,
-                    "message": "Could not extract Cypher commands from LLM response or the block was empty.",
-                    "response": response_text,
-                    "cypher": None
-                }
         except Exception as e:
-            print(f"Error processing LLM turn for {participant['name']}: {str(e)}")
-            return {
-                "participant": participant["name"],
-                "success": False,
-                "message": f"Error: {str(e)}",
-                "response": None, 
-                "cypher": None
-            }
-    
-    def execute_cypher_commands(self, cypher_commands):
-        """Execute a series of Cypher commands safely"""
-        try:
-            with self.driver.session() as session:
-                commands = [cmd.strip() for cmd in cypher_commands.split(';') if cmd.strip()]
-                
-                if not commands:
-                    return False, "No valid Cypher commands to execute after splitting and stripping."
+            print(f"Error processing LLM turn for {participant['name']}: {e}")
+            return {"participant": participant["name"], "success": False, "message": f"Error processing LLM turn: {e}"}
 
-                for cmd in commands:
-                    print(f"DEBUG: Executing Cypher command: {cmd}")
-                    session.run(cmd)
-                
-            return True, "Cypher commands executed successfully"
-        except Exception as e:
-            print(f"DEBUG: Error during Cypher execution: {str(e)}")
-            return False, f"Error executing Cypher commands: {str(e)}"
-    
-    def run_game(self, num_turns=5):
+    async def run_game(self, num_turns=5):
         """Run the game for a specified number of turns"""
         if not self.participants:
             print("No participants added. Add participants before running the game.")
-            return [] # Return empty list if no participants
-        
-        # Initialize the graph if not already done (e.g., if Redis state wasn't loaded and current_graph_state is empty)
-        if not self.current_graph_state: # Check if graph state was loaded from Redis or initialized
-            print("INFO: No existing graph state found. Initializing graph...")
-            self.initialize_graph()
-        
-        results = []
-        
-        for turn_attempt in range(num_turns): 
-            print(f"\n--- Attempting Turn {turn_attempt + 1} (Overall Successful Turns So Far: {self.turn_count}) ---")
-            
-            if not self.participants: 
-                print("Error: No participants available to take a turn.")
-                break
+            return []
 
+        print("INFO: Starting game...")
+        results = []
+        for turn in range(num_turns):
+            print(f"\n--- Turn {turn + 1} ---")
             participant_index = self.turn_count % len(self.participants)
             participant = self.participants[participant_index]
             print(f"Participant: {participant['name']}")
-            
-            result = None 
-            if participant["type"] == "LLM":
-                result = self.process_llm_turn(participant_index)
-                if result and result.get("success"):
-                    print(f"Contribution successful: {result['message']}")
-                elif result:
-                    print(f"Contribution failed: {result['message']}")
-                else: 
-                    print(f"Contribution failed: No result from process_llm_turn for {participant['name']}")
-                
-                if result: 
-                    results.append(result)
-            
-            if not result or not result.get("success"):
-                print(f"INFO: Turn for {participant['name']} was not successful or did not yield changes. Graph state remains as per last successful update.")
-        
+            result = await self.process_llm_turn(participant_index)
+            if result and result.get("success"):
+                print(f"Contribution successful: {result['message']}")
+            elif result:
+                print(f"Contribution failed: {result['message']}")
+            results.append(result)
+            time.sleep(1) # Be gentle on the LLMs and server
+
         print("\n--- Game Complete ---")
-        self.save_game_state_to_redis() 
         return results
-    
-    def export_graph(self, format="json"):
-        """Export the current graph"""
+
+    async def get_graph_for_export(self):
+        """Get the current graph state as JSON from the MCP server for export."""
+        try:
+            return await self.mcp_client.get_graph()
+        except httpx.HTTPStatusError as e:
+            print(f"ERROR: Could not fetch graph JSON from MCP for export: {e}")
+            return {"error": str(e)}
+        except httpx.RequestError as e:
+            print(f"ERROR: Could not connect to MCP to fetch graph JSON for export: {e}")
+            return {"error": str(e)}
+
+    async def export_graph(self, format="json"):
+        """Export the current graph state."""
+        graph_data = await self.mcp_client.get_graph()
+        nodes_list = []
+        for node in graph_data.get("nodes", []):
+            nodes_list.append({"id": node['id'], "labels": node['labels'], "properties": node['properties']})
+
+        relationships_list = []
+        for rel in graph_data.get("relationships", []):
+            relationships_list.append({
+                "source": rel['startNodeId'],
+                "target": rel['endNodeId'],
+                "type": rel['type'],
+                "properties": rel['properties']
+            })
+
         if format == "json":
-            return json.dumps(self.current_graph_state, indent=2)
+            return {"nodes": nodes_list, "relationships": relationships_list}
         elif format == "cypher":
-            return self.get_graph_cypher_representation()
+            try:
+                response = await self.mcp_client.execute_query("CALL apoc.export.cypher.all(null, {config: {}}) YIELD output")
+                if response and len(response) > 0 and 'output' in response[0]:
+                    # The output might be a single string or a list
+                    if isinstance(response[0]['output'], list):
+                        return "\n".join(response[0]['output'])
+                    else:
+                        return response[0]['output']
+                else:
+                    return "Could not export to Cypher using APOC."
+            except httpx.HTTPStatusError as e:
+                print(f"Error exporting to Cypher via APOC: {e.response.status_code} - {e.response.text}")
+                return f"Error exporting to Cypher: {e.response.status_code}"
+            except httpx.RequestError as e:
+                print(f"Error connecting to MCP for Cypher export: {e}")
+                return "Error connecting to MCP for Cypher export."
         else:
             raise ValueError(f"Unsupported export format: {format}")
-    
+
     def close(self):
-        """Close connections"""
+        """Close Neo4j driver connection"""
         if hasattr(self, 'driver'):
             self.driver.close()
         print("INFO: Neo4j driver connection closed.")
 
 # Example usage and main game execution block
 if __name__ == "__main__":
-    game = KnowledgeGraphGame()
-    
-    # Add LLM participants
-    # Using descriptive names and different Claude models if available/desired
-    game.add_llm_participant("PhilosopherOfComplexity_LLM", model_name="llama3:latest",client_type="ollama") 
-    game.add_llm_participant("RoboticsFuturist_LLM", model_name="llama3:latest",client_type="ollama")
-    game.add_llm_participant("ComputationalBiologist_LLM", model_name="llama3:latest",client_type="ollama")
-    game.add_llm_participant("Neuroscientist_LLM", model_name="llama3:latest",client_type="ollama") 
-    game.add_llm_participant("MaterialsInnovator_LLM", model_name="llama3:latest",client_type="ollama")
-    game.add_llm_participant("AI_Ethicist_LLM", model_name="llama3:latest",client_type="ollama")
-    game.add_llm_participant("EvolutionaryEcologist_LLM", model_name="llama3:latest",client_type="ollama")
-    
-    # Initialize graph: ensures seed nodes exist using MERGE, doesn't wipe by default.
-    # Set force_reset=True if you want to start completely fresh (e.g., game.initialize_graph(force_reset=True))
-    # The __init__ method already attempts to load state from Redis and then syncs from DB if Redis state is empty.
-    # This call ensures the seed nodes are present on top of whatever was loaded or exists.
-    game.initialize_graph(force_reset=False) 
-    
-    num_participants = len(game.participants)
-    if num_participants > 0:
-        print(f"INFO: Starting game with {num_participants} participants for {num_participants * 2} turns.")
-        results = game.run_game(num_turns=num_participants * 2) 
-        
+    # Ensure environment variables are set
+    if not all([os.environ.get(key) for key in ["NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "ANTHROPIC_API_KEY", "OLLAMA_MODEL", "MCP_SERVER_URL"]]):
+        print("Error: Please set NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, ANTHROPIC_API_KEY (optional), OLLAMA_MODEL, and MCP_SERVER_URL environment variables.")
     else:
-        print("WARNING: No participants added to the game. Game will not run.")
-    
-    if game.current_graph_state: 
-        final_graph_cypher = game.export_graph(format="cypher")
-        print("\n--- Final Graph (Cypher Representation) ---")
-        print(final_graph_cypher)
-    else:
-        print("INFO: No graph state to export.")
-    
-    game.close()
-    print("INFO: Game script finished.")
+        game = KnowledgeGraphGame()
+
+        # Add LLM participants
+        game.add_llm_participant("PhilosopherOfComplexity_LLM", model_name="llama3:latest", client_type="ollama")
+        game.add_llm_participant("RoboticsFuturist_LLM", model_name="llama3:latest", client_type="ollama")
+        # Add more participants as needed
+
+        num_participants = len(game.participants)
+        if num_participants > 0:
+            print(f"INFO: Starting game with {num_participants} participants for {num_participants * 2} turns.")
+            results = asyncio.run(game.run_game(num_turns=num_participants * 2))
+            print("\n--- Game Results ---")
+            for result in results:
+                print(f"{result.get('participant')}: {result.get('message')}")
+        else:
+            print("WARNING: No participants added to the game. Game will not run.")
+
+        final_graph_json = asyncio.run(game.export_graph(format="json"))
+        print("\n--- Final Graph (JSON Representation) ---")
+        print(final_graph_json)
+
+        game.close()
+        print("INFO: Game script finished.")

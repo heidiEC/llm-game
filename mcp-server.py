@@ -2,7 +2,6 @@ import os
 import json
 import time
 from typing import Dict, List, Optional, Union, Any
-import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,6 +9,22 @@ import uvicorn
 from neo4j import GraphDatabase
 import redis
 from sse_starlette.sse import EventSourceResponse
+from dotenv import load_dotenv
+load_dotenv()
+
+import certifi
+
+# --- Attempt to set SSL_CERT_FILE programmatically using certifi ---
+try:
+    certifi_path = certifi.where()
+    os.environ['SSL_CERT_FILE'] = certifi_path
+    os.environ['REQUESTS_CA_BUNDLE'] = certifi_path # For other libs like requests
+    print(f"INFO: Programmatically set SSL_CERT_FILE to: {certifi_path}")
+except ImportError:
+    print("WARNING: certifi package not found. Cannot programmatically set SSL_CERT_FILE.")
+except Exception as e:
+    print(f"ERROR: Error setting SSL_CERT_FILE from certifi: {e}")
+# --- End of SSL_CERT_FILE setting ---
 
 # --- Models ---
 class NodeData(BaseModel):
@@ -40,11 +55,15 @@ class HubNode(BaseModel):
 class SchemaInfo(BaseModel):
     nodeLabels: List[str]
     relationshipTypes: List[str]
-    propertyKeys: Dict[str, List[str]]
+    propertyKeys: Dict[str, List[str]] # Existing
+    # Optional: Add more detailed APOC-like schema structure if desired
+    # apocSchema: Optional[List[Dict[str, Any]]] = None 
+
 
 # --- Neo4j Database ---
 class Neo4jDatabase:
     def __init__(self, uri, user, password):
+        print(f"Connecting to Neo4j with URI: {uri}, User: {user}")
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
     def close(self):
@@ -52,8 +71,14 @@ class Neo4jDatabase:
 
     def execute_query(self, query, parameters=None):
         with self.driver.session() as session:
-            result = session.run(query, parameters or {})
-            return [record.data() for record in result]
+            # For write queries, we might want to return summary info
+            # For read queries, we return records
+            # This simple version just returns records for now, see execute_cypher for more detail
+            tx = session.begin_transaction()
+            result = tx.run(query, parameters or {})
+            records = [record.data() for record in result]
+            tx.commit()
+            return records
 
     def get_taxonomy_categories(self, filter_text=None, limit=25):
         query = """
@@ -83,35 +108,96 @@ class Neo4jDatabase:
         return result
 
     def get_schema_info(self):
-        # Get node labels
-        labels_query = "CALL db.labels()"
-        labels = [record["label"] for record in self.execute_query(labels_query)]
-
-        # Get relationship types
-        rel_query = "CALL db.relationshipTypes()"
-        rel_types = [record["relationshipType"] for record in self.execute_query(rel_query)]
-
-        # Get property keys for each label
-        prop_keys = {}
-        for label in labels:
-            prop_query = f"""
-            MATCH (n:{label})
-            UNWIND keys(n) AS key
-            RETURN DISTINCT key
-            LIMIT 100
-            """
-            prop_keys[label] = [record["key"] for record in self.execute_query(prop_query)]
-
-        return {
-            "nodeLabels": labels,
-            "relationshipTypes": rel_types,
-            "propertyKeys": prop_keys
-        }
-
-    def execute_cypher(self, query, parameters=None):
+        # Attempt to use APOC for richer schema, fallback to basic if APOC is not available or fails
+        apoc_schema_query = """
+        CALL apoc.meta.data() YIELD label, property, type, other, unique, index, elementType
+        WHERE elementType = 'node' AND NOT label STARTS WITH '_'
+        WITH label,
+            collect(CASE WHEN type <> 'RELATIONSHIP' THEN [property, type + CASE WHEN unique THEN " unique" ELSE "" END + CASE WHEN index THEN " indexed" ELSE "" END] END) AS attributes,
+            collect(CASE WHEN type = 'RELATIONSHIP' THEN [property, head(other)] END) AS relationships
+        RETURN label, apoc.map.fromPairs(attributes) AS attributes, apoc.map.fromPairs(relationships) AS relationships
+        """
         try:
-            return self.execute_query(query, parameters)
+            apoc_results = self.execute_query(apoc_schema_query)
+            # Process apoc_results into your desired SchemaInfo structure
+            # This might involve extracting distinct labels, rel types, and properties per label
+            node_labels = sorted(list(set([item['label'] for item in apoc_results])))
+            
+            all_rel_types = set()
+            property_keys_map = {label: [] for label in node_labels}
+
+            for item in apoc_results:
+                label = item['label']
+                if item.get('attributes'):
+                    property_keys_map[label].extend(item['attributes'].keys())
+                if item.get('relationships'):
+                    all_rel_types.update(item['relationships'].keys())
+            
+            # Deduplicate property keys
+            for label in property_keys_map:
+                property_keys_map[label] = sorted(list(set(property_keys_map[label])))
+
+            return {
+                "nodeLabels": node_labels,
+                "relationshipTypes": sorted(list(all_rel_types)),
+                "propertyKeys": property_keys_map
+                # "apocSchema": apoc_results # Optionally include the raw APOC output
+            }
         except Exception as e:
+            print(f"WARNING: APOC schema query failed ('{e}'). Falling back to basic schema introspection. Ensure APOC is installed.")
+            # Fallback to basic schema introspection
+            labels = [record["label"] for record in self.execute_query("CALL db.labels()")]
+            rel_types = [record["relationshipType"] for record in self.execute_query("CALL db.relationshipTypes()")]
+            prop_keys = {}
+            for label in labels:
+                prop_query = f"MATCH (n:{label}) UNWIND keys(n) AS key RETURN DISTINCT key LIMIT 100"
+                prop_keys[label] = [record["key"] for record in self.execute_query(prop_query)]
+            return {
+                "nodeLabels": labels,
+                "relationshipTypes": rel_types,
+                "propertyKeys": prop_keys
+            }
+
+    def execute_cypher(self, query: str, parameters: Optional[Dict] = None):
+        try:
+            with self.driver.session() as session:
+                tx = session.begin_transaction()
+                results = []
+                for statement in query.strip().split(';'):
+                    if statement.strip():  # Ignore empty statements
+                        result = tx.run(statement, parameters or {})
+                        if any(keyword in statement.upper() for keyword in ["CREATE", "MERGE", "SET", "DELETE", "REMOVE"]):
+                            summary = result.consume()  # This returns ResultSummary
+                            if summary and summary.counters:
+                                # Access counters directly as properties, not ._counts
+                                counters_dict = {
+                                    "nodes_created": summary.counters.nodes_created,
+                                    "nodes_deleted": summary.counters.nodes_deleted,
+                                    "relationships_created": summary.counters.relationships_created,
+                                    "relationships_deleted": summary.counters.relationships_deleted,
+                                    "properties_set": summary.counters.properties_set,
+                                    "labels_added": summary.counters.labels_added,
+                                    "labels_removed": summary.counters.labels_removed,
+                                    "indexes_added": summary.counters.indexes_added,
+                                    "indexes_removed": summary.counters.indexes_removed,
+                                    "constraints_added": summary.counters.constraints_added,
+                                    "constraints_removed": summary.counters.constraints_removed,
+                                }
+                                results.append({
+                                    "counters": counters_dict, 
+                                    "notifications": [notif._asdict() for notif in (summary.notifications or [])]
+                                })
+                            else:
+                                results.append({
+                                    "notifications": [notif._asdict() for notif in (summary.notifications or [])] if summary else []
+                                })
+                        else:
+                            # For read queries, return the actual data
+                            results.append([record.data() for record in result])
+                tx.commit()
+                return results
+        except Exception as e:
+            print(f"ERROR executing Cypher: {query} with params {parameters}. Error: {e}")
             raise HTTPException(status_code=400, detail=f"Query error: {str(e)}")
 
 # --- Everychart MCP Server ---
@@ -195,8 +281,118 @@ class EverychartMCPServer:
             return schema_info
 
         @self.app.post("/api/cypher")
-        async def execute_cypher(query: str, params: Optional[Dict] = None):
-            return self.db.execute_cypher(query, params)
+        async def run_cypher_query(payload: Dict): # Changed to accept a JSON payload
+            query = payload.get("query")
+            params = payload.get("params")
+            if not query:
+                raise HTTPException(status_code=400, detail="Missing 'query' in request payload")
+            # The db.execute_cypher method now handles potential errors and returns structured info
+            return self.db.execute_cypher(query, params or {})
+        
+
+        @self.app.post("/api/json-to-cypher")
+        async def json_to_cypher(payload: Dict):
+            cypher_commands = []
+            try:
+                explanation = payload.get("explanation", "")
+                nodes = payload.get("nodes", [])
+                relationships = payload.get("relationships", [])
+                future_directions = payload.get("future_directions", [])
+
+                # Create nodes
+                for node_data in nodes:
+                    name = node_data.get("name")
+                    labels = node_data.get("labels", [])
+                    properties = node_data.get("properties", {})
+                    if name:
+                        # Escape single quotes in name and properties
+                        escaped_name = name.replace("'", "\\'")
+                        label_str = ":" + ":".join(labels) if labels else ""
+                        
+                        # Build properties string more carefully
+                        prop_parts = [f"name: '{escaped_name}'"]
+                        for k, v in properties.items():
+                            if isinstance(v, str):
+                                escaped_v = v.replace("'", "\\'")
+                                prop_parts.append(f"{k}: '{escaped_v}'")
+                            elif isinstance(v, (int, float, bool)):
+                                prop_parts.append(f"{k}: {json.dumps(v)}")
+                            else:
+                                prop_parts.append(f"{k}: {json.dumps(v)}")
+                        
+                        props_str = ", ".join(prop_parts)
+                        cypher_commands.append(f"MERGE (n{label_str} {{{props_str}}})")
+
+                # Create relationships
+                for rel_data in relationships:
+                    source_name = rel_data.get("source_node_name")
+                    target_name = rel_data.get("target_node_name")
+                    rel_type = rel_data.get("type")
+                    properties = rel_data.get("properties", {})
+                    
+                    if source_name and target_name and rel_type:
+                        # Escape single quotes
+                        escaped_source = source_name.replace("'", "\\'")
+                        escaped_target = target_name.replace("'", "\\'")
+                        
+                        props_str = ""
+                        if properties:
+                            prop_parts = []
+                            for k, v in properties.items():
+                                if isinstance(v, str):
+                                    escaped_v = v.replace("'", "\\'")
+                                    prop_parts.append(f"{k}: '{escaped_v}'")
+                                elif isinstance(v, (int, float, bool)):
+                                    prop_parts.append(f"{k}: {json.dumps(v)}")
+                                else:
+                                    prop_parts.append(f"{k}: {json.dumps(v)}")
+                            props_str = " {" + ", ".join(prop_parts) + "}"
+                        
+                        cypher_commands.append(
+                            f"MATCH (source {{name: '{escaped_source}'}}), (target {{name: '{escaped_target}'}}) "
+                            f"MERGE (source)-[:{rel_type}{props_str}]->(target)"
+                        )
+
+                # Execute the Cypher commands
+                if cypher_commands:
+                    combined_cypher = ";\n".join(cypher_commands)
+                    print(f"DEBUG: Executing combined Cypher:\n{combined_cypher}")
+                    result = self.db.execute_cypher(combined_cypher)
+                    return {"success": True, "message": "Graph updated", "cypher_result": result}
+                else:
+                    return {"success": True, "message": "No nodes or relationships to add"}
+
+            except HTTPException as e:
+                raise e
+            except Exception as e:
+                print(f"Error processing JSON to Cypher: {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {str(e)}")
+
+        @self.app.get("/api/graph", response_model=GraphResponse)
+        async def get_graph():
+            nodes_data = self.db.execute_query("MATCH (n) RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS properties")
+            relationships_data = self.db.execute_query("MATCH ()-[r]->() RETURN elementId(r) AS id, type(r) AS type, elementId(startNode(r)) AS startNodeId, elementId(endNode(r)) AS endNodeId, properties(r) AS properties")
+
+            nodes = [
+                NodeData(
+                    id=item['id'],
+                    labels=item['labels'],
+                    properties=item['properties']
+                )
+                for item in nodes_data
+            ]
+            relationships = [
+                RelationshipData(
+                    id=item['id'],
+                    type=item['type'],
+                    startNodeId=item['startNodeId'],
+                    endNodeId=item['endNodeId'],
+                    properties=item['properties']
+                )
+                for item in relationships_data
+            ]
+
+            return GraphResponse(nodes=nodes, relationships=relationships)
 
         @self.app.get("/api/expand-node/{node_id}")
         async def expand_node(
@@ -230,13 +426,20 @@ class EverychartMCPServer:
 
 # Example usage
 if __name__ == "__main__":
-    # Set up and run the server
-    server = EverychartMCPServer(
-        neo4j_uri="neo4j://localhost:7687",
-        neo4j_user="neo4j",
-        neo4j_password="password",
-        redis_url="redis://localhost:6379"
-    )
+    neo4j_uri = os.environ.get("NEO4J_URI")
+    neo4j_user = os.environ.get("NEO4J_USER")
+    neo4j_password = os.environ.get("NEO4J_PASSWORD")
+    redis_url = os.environ.get("REDIS_URL") 
+
+    if not all([neo4j_uri, neo4j_user, neo4j_password]):
+        print("Error: Please set NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD environment variables.")
+    else:
+        server = EverychartMCPServer(
+            neo4j_uri=neo4j_uri,
+            neo4j_user=neo4j_user,
+            neo4j_password=neo4j_password,
+            redis_url=redis_url
+        )
 
     # Run in a separate thread/process in a real application
     import threading
