@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from typing import Dict, List, Optional, Union, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,15 +71,27 @@ class Neo4jDatabase:
         self.driver.close()
 
     def execute_query(self, query, parameters=None):
-        with self.driver.session() as session:
-            # For write queries, we might want to return summary info
-            # For read queries, we return records
-            # This simple version just returns records for now, see execute_cypher for more detail
-            tx = session.begin_transaction()
-            result = tx.run(query, parameters or {})
-            records = [record.data() for record in result]
-            tx.commit()
-            return records
+        try:
+            with self.driver.session() as session:
+                result = session.run(query, parameters or {})
+                records = []
+                for record in result:
+                    try:
+                        if hasattr(record, 'data'):
+                            records.append(record.data())
+                        else:
+                            # Fallback: convert to dict manually
+                            record_dict = {}
+                            for key in record.keys():
+                                record_dict[key] = record[key]
+                            records.append(record_dict)
+                    except Exception as e:
+                        print(f"WARNING: Could not convert record in execute_query: {e}")
+                        continue
+                return records
+        except Exception as e:
+            print(f"ERROR in execute_query: {e}")
+            raise
 
     def get_taxonomy_categories(self, filter_text=None, limit=25):
         query = """
@@ -93,19 +106,36 @@ class Neo4jDatabase:
         return result
 
     def get_connected_nodes(self, node_id, relationship_types=None, depth=1):
-        relationship_filter = ""
-        if relationship_types and len(relationship_types) > 0:
-            type_list = '|'.join([f":{rel_type}" for rel_type in relationship_types])
-            relationship_filter = f"[r {type_list}]"
-
-        query = f"""
-        MATCH (n)-{relationship_filter}*1..{depth}-(connected)
-        WHERE id(n) = $node_id
-        RETURN connected, id(connected) as id, labels(connected) as labels
-        LIMIT 100
-        """
-        result = self.execute_query(query, {"node_id": node_id})
-        return result
+        try:
+            # Convert node_id to integer if it's a string that looks like a number
+            if isinstance(node_id, str) and node_id.isdigit():
+                node_id = int(node_id)
+        
+            relationship_filter = ""
+            if relationship_types and len(relationship_types) > 0:
+                # Clean relationship types
+                clean_types = [rel_type.strip() for rel_type in relationship_types if rel_type.strip()]
+                if clean_types:
+                    type_list = '|'.join([f":{rel_type}" for rel_type in clean_types])
+                    relationship_filter = f"[r{type_list}]"
+        
+            # Use elementId() for Neo4j 5.x compatibility
+            query = f"""
+            MATCH (n)-{relationship_filter}*1..{depth}-(connected)
+            WHERE elementId(n) = $node_id OR id(n) = $node_id
+            RETURN DISTINCT connected, elementId(connected) as elementId, id(connected) as id, labels(connected) as labels
+            LIMIT 100
+            """
+        
+            print(f"DEBUG: Executing get_connected_nodes query: {query} with node_id: {node_id}")
+            result = self.execute_query(query, {"node_id": node_id})
+            print(f"DEBUG: get_connected_nodes returned {len(result)} results")
+            return result
+        
+        except Exception as e:
+            print(f"ERROR in get_connected_nodes: {e}")
+            # Return empty result instead of failing
+            return []
 
     def get_schema_info(self):
         # Attempt to use APOC for richer schema, fallback to basic if APOC is not available or fails
@@ -161,43 +191,81 @@ class Neo4jDatabase:
     def execute_cypher(self, query: str, parameters: Optional[Dict] = None):
         try:
             with self.driver.session() as session:
-                tx = session.begin_transaction()
                 results = []
-                for statement in query.strip().split(';'):
-                    if statement.strip():  # Ignore empty statements
-                        result = tx.run(statement, parameters or {})
+                # Split multiple statements if they exist
+                statements = [stmt.strip() for stmt in query.strip().split(';') if stmt.strip()]
+                
+                for statement in statements:
+                    print(f"DEBUG: Executing statement: {statement}")
+                    try:
+                        result = session.run(statement, parameters or {})
+                        
+                        # Check if this is a write operation
                         if any(keyword in statement.upper() for keyword in ["CREATE", "MERGE", "SET", "DELETE", "REMOVE"]):
-                            summary = result.consume()  # This returns ResultSummary
-                            if summary and summary.counters:
-                                # Access counters directly as properties, not ._counts
-                                counters_dict = {
-                                    "nodes_created": summary.counters.nodes_created,
-                                    "nodes_deleted": summary.counters.nodes_deleted,
-                                    "relationships_created": summary.counters.relationships_created,
-                                    "relationships_deleted": summary.counters.relationships_deleted,
-                                    "properties_set": summary.counters.properties_set,
-                                    "labels_added": summary.counters.labels_added,
-                                    "labels_removed": summary.counters.labels_removed,
-                                    "indexes_added": summary.counters.indexes_added,
-                                    "indexes_removed": summary.counters.indexes_removed,
-                                    "constraints_added": summary.counters.constraints_added,
-                                    "constraints_removed": summary.counters.constraints_removed,
+                            # For write operations, get the summary
+                            summary = result.consume()
+                            if summary and hasattr(summary, 'counters') and summary.counters:
+                                # Convert counters to dict safely
+                                counters_dict = {}
+                                if hasattr(summary.counters, '_asdict'):
+                                    counters_dict = summary.counters._asdict()
+                                else:
+                                    # Fallback: manually extract counter values
+                                    counters_dict = {
+                                        'nodes_created': getattr(summary.counters, 'nodes_created', 0),
+                                        'nodes_deleted': getattr(summary.counters, 'nodes_deleted', 0),
+                                        'relationships_created': getattr(summary.counters, 'relationships_created', 0),
+                                        'relationships_deleted': getattr(summary.counters, 'relationships_deleted', 0),
+                                        'properties_set': getattr(summary.counters, 'properties_set', 0),
+                                        'labels_added': getattr(summary.counters, 'labels_added', 0),
+                                        'labels_removed': getattr(summary.counters, 'labels_removed', 0),
+                                        'indexes_added': getattr(summary.counters, 'indexes_added', 0),
+                                        'indexes_removed': getattr(summary.counters, 'indexes_removed', 0),
+                                        'constraints_added': getattr(summary.counters, 'constraints_added', 0),
+                                        'constraints_removed': getattr(summary.counters, 'constraints_removed', 0),
+                                    }
+                                
+                                result_data = {
+                                    "counters": counters_dict,
+                                    "notifications": [str(n) for n in (summary.notifications or [])]
                                 }
-                                results.append({
-                                    "counters": counters_dict, 
-                                    "notifications": [notif._asdict() for notif in (summary.notifications or [])]
-                                })
                             else:
-                                results.append({
-                                    "notifications": [notif._asdict() for notif in (summary.notifications or [])] if summary else []
-                                })
+                                result_data = {
+                                    "counters": {},
+                                    "notifications": []
+                                }
+                            results.append(result_data)
                         else:
-                            # For read queries, return the actual data
-                            results.append([record.data() for record in result])
-                tx.commit()
+                            # For read operations, get the records
+                            records = []
+                            for record in result:
+                                # Convert record to dict safely
+                                try:
+                                    if hasattr(record, 'data'):
+                                        records.append(record.data())
+                                    elif hasattr(record, '_asdict'):
+                                        records.append(record._asdict())
+                                    else:
+                                        # Fallback: convert to dict manually
+                                        record_dict = {}
+                                        for key in record.keys():
+                                            record_dict[key] = record[key]
+                                        records.append(record_dict)
+                                except Exception as e:
+                                    print(f"WARNING: Could not convert record to dict: {e}")
+                                    records.append({"error": f"Could not convert record: {str(e)}"})
+                            results.append(records)
+                            
+                    except Exception as e:
+                        print(f"ERROR: Failed to execute statement '{statement}': {e}")
+                        results.append({"error": str(e), "statement": statement})
+                        
                 return results
+                
         except Exception as e:
             print(f"ERROR executing Cypher: {query} with params {parameters}. Error: {e}")
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=400, detail=f"Query error: {str(e)}")
 
 # --- Everychart MCP Server ---
@@ -299,73 +367,206 @@ class EverychartMCPServer:
                 relationships = payload.get("relationships", [])
                 future_directions = payload.get("future_directions", [])
 
-                # Create nodes
-                for node_data in nodes:
-                    name = node_data.get("name")
-                    labels = node_data.get("labels", [])
-                    properties = node_data.get("properties", {})
-                    if name:
-                        # Escape single quotes in name and properties
-                        escaped_name = name.replace("'", "\\'")
-                        label_str = ":" + ":".join(labels) if labels else ""
+                print(f"DEBUG: Processing payload with {len(nodes)} nodes and {len(relationships)} relationships")
+
+                # Create nodes first (keeping existing logic)
+                for i, node_data in enumerate(nodes):
+                    try:
+                        name = node_data.get("name")
+                        labels = node_data.get("labels", [])
+                        properties = node_data.get("properties", {})
+                        
+                        if not name:
+                            print(f"WARNING: Node {i} has no name, skipping")
+                            continue
+                        
+                        print(f"DEBUG: Processing node '{name}' with labels {labels}")
+                        
+                        # Clean labels - remove spaces and special characters
+                        clean_labels = []
+                        for label in labels:
+                            clean_label = re.sub(r'[^a-zA-Z0-9_]', '', label.replace(' ', ''))
+                            if clean_label:
+                                clean_labels.append(clean_label)
+                        
+                        label_str = ":" + ":".join(clean_labels) if clean_labels else ""
                         
                         # Build properties string more carefully
-                        prop_parts = [f"name: '{escaped_name}'"]
-                        for k, v in properties.items():
-                            if isinstance(v, str):
-                                escaped_v = v.replace("'", "\\'")
-                                prop_parts.append(f"{k}: '{escaped_v}'")
-                            elif isinstance(v, (int, float, bool)):
-                                prop_parts.append(f"{k}: {json.dumps(v)}")
-                            else:
-                                prop_parts.append(f"{k}: {json.dumps(v)}")
+                        all_properties = {"name": name}
+                        all_properties.update(properties)
                         
-                        props_str = ", ".join(prop_parts)
-                        cypher_commands.append(f"MERGE (n{label_str} {{{props_str}}})")
+                        props_list = []
+                        for k, v in all_properties.items():
+                            # Clean property key
+                            clean_key = re.sub(r'[^a-zA-Z0-9_]', '', k.replace(' ', '_'))
+                            if not clean_key:
+                                continue
+                            
+                            if isinstance(v, str):
+                                # Escape quotes and handle multiline strings
+                                escaped_v = v.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
+                                # Truncate very long strings
+                                if len(escaped_v) > 1000:
+                                    escaped_v = escaped_v[:1000] + "..."
+                                props_list.append(f"{clean_key}: '{escaped_v}'")
+                            elif isinstance(v, (int, float)):
+                                props_list.append(f"{clean_key}: {v}")
+                            elif isinstance(v, bool):
+                                props_list.append(f"{clean_key}: {str(v).lower()}")
+                            elif v is None:
+                                props_list.append(f"{clean_key}: null")
+                            else:
+                                # For complex objects, convert to JSON string
+                                try:
+                                    json_str = json.dumps(v)
+                                    escaped_v = json_str.replace("\\", "\\\\").replace("'", "\\'")
+                                    props_list.append(f"{clean_key}: '{escaped_v}'")
+                                except:
+                                    # If JSON serialization fails, convert to string
+                                    str_v = str(v).replace("\\", "\\\\").replace("'", "\\'")
+                                    props_list.append(f"{clean_key}: '{str_v}'")
+                        
+                        if props_list:
+                            props_str = ", ".join(props_list)
+                            cypher_command = f"MERGE (n{label_str} {{{props_str}}})"
+                            cypher_commands.append(cypher_command)
+                            print(f"DEBUG: Generated node Cypher: {cypher_command}")
+                        
+                    except Exception as e:
+                        print(f"ERROR: Failed to process node {i}: {e}")
+                        continue
 
-                # Create relationships
-                for rel_data in relationships:
-                    source_name = rel_data.get("source_node_name")
-                    target_name = rel_data.get("target_node_name")
-                    rel_type = rel_data.get("type")
-                    properties = rel_data.get("properties", {})
-                    
-                    if source_name and target_name and rel_type:
-                        # Escape single quotes
-                        escaped_source = source_name.replace("'", "\\'")
-                        escaped_target = target_name.replace("'", "\\'")
+                # Execute node creation first
+                if cypher_commands:
+                    print(f"DEBUG: Executing {len(cypher_commands)} node creation commands first")
+                    try:
+                        combined_node_cypher = ";\n".join(cypher_commands) + ";"
+                        node_results = self.db.execute_cypher(combined_node_cypher)
+                        print(f"DEBUG: Node creation results: {node_results}")
+                    except Exception as e:
+                        print(f"ERROR: Failed to create nodes: {e}")
+                        return {"success": False, "message": f"Node creation failed: {str(e)}"}
+
+                # Now create relationships separately
+                relationship_commands = []
+                for i, rel_data in enumerate(relationships):
+                    try:
+                        source_name = rel_data.get("source_node_name")
+                        target_name = rel_data.get("target_node_name")
+                        rel_type = rel_data.get("type")
+                        properties = rel_data.get("properties", {})
+                        
+                        if not all([source_name, target_name, rel_type]):
+                            print(f"WARNING: Relationship {i} missing required fields, skipping")
+                            continue
+                        
+                        print(f"DEBUG: Processing relationship {source_name} -> {target_name} ({rel_type})")
+                        
+                        # First, let's check if both nodes exist
+                        escaped_source = source_name.replace("\\", "\\\\").replace("'", "\\'")
+                        escaped_target = target_name.replace("\\", "\\\\").replace("'", "\\'")
+                        
+                        # Check if source node exists
+                        check_source_query = f"MATCH (n {{name: '{escaped_source}'}}) RETURN count(n) as count"
+                        try:
+                            source_check = self.db.execute_query(check_source_query)
+                            source_count = source_check[0]['count'] if source_check else 0
+                            print(f"DEBUG: Source node '{source_name}' count: {source_count}")
+                        except Exception as e:
+                            print(f"ERROR: Could not check source node: {e}")
+                            continue
+                        
+                        # Check if target node exists
+                        check_target_query = f"MATCH (n {{name: '{escaped_target}'}}) RETURN count(n) as count"
+                        try:
+                            target_check = self.db.execute_query(check_target_query)
+                            target_count = target_check[0]['count'] if target_check else 0
+                            print(f"DEBUG: Target node '{target_name}' count: {target_count}")
+                        except Exception as e:
+                            print(f"ERROR: Could not check target node: {e}")
+                            continue
+                        
+                        if source_count == 0:
+                            print(f"WARNING: Source node '{source_name}' not found, skipping relationship")
+                            continue
+                        
+                        if target_count == 0:
+                            print(f"WARNING: Target node '{target_name}' not found, skipping relationship")
+                            continue
+                        
+                        # Clean relationship type
+                        clean_rel_type = re.sub(r'[^a-zA-Z0-9_]', '', rel_type.replace(' ', '_').upper())
                         
                         props_str = ""
                         if properties:
-                            prop_parts = []
+                            prop_pairs = []
                             for k, v in properties.items():
+                                clean_key = re.sub(r'[^a-zA-Z0-9_]', '', k.replace(' ', '_'))
+                                if not clean_key:
+                                    continue
+                                    
                                 if isinstance(v, str):
-                                    escaped_v = v.replace("'", "\\'")
-                                    prop_parts.append(f"{k}: '{escaped_v}'")
-                                elif isinstance(v, (int, float, bool)):
-                                    prop_parts.append(f"{k}: {json.dumps(v)}")
+                                    escaped_v = v.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
+                                    if len(escaped_v) > 1000:
+                                        escaped_v = escaped_v[:1000] + "..."
+                                    prop_pairs.append(f"{clean_key}: '{escaped_v}'")
+                                elif isinstance(v, (int, float)):
+                                    prop_pairs.append(f"{clean_key}: {v}")
+                                elif isinstance(v, bool):
+                                    prop_pairs.append(f"{clean_key}: {str(v).lower()}")
+                                elif v is None:
+                                    prop_pairs.append(f"{clean_key}: null")
                                 else:
-                                    prop_parts.append(f"{k}: {json.dumps(v)}")
-                            props_str = " {" + ", ".join(prop_parts) + "}"
+                                    try:
+                                        json_str = json.dumps(v)
+                                        escaped_v = json_str.replace("\\", "\\\\").replace("'", "\\'")
+                                        prop_pairs.append(f"{clean_key}: '{escaped_v}'")
+                                    except:
+                                        str_v = str(v).replace("\\", "\\\\").replace("'", "\\'")
+                                        prop_pairs.append(f"{clean_key}: '{str_v}'")
+                            
+                            if prop_pairs:
+                                props_str = " {" + ", ".join(prop_pairs) + "}"
                         
-                        cypher_commands.append(
-                            f"MATCH (source {{name: '{escaped_source}'}}), (target {{name: '{escaped_target}'}}) "
-                            f"MERGE (source)-[:{rel_type}{props_str}]->(target)"
-                        )
+                        cypher_command = f"MATCH (source {{name: '{escaped_source}'}}), (target {{name: '{escaped_target}'}}) MERGE (source)-[:{clean_rel_type}{props_str}]->(target)"
+                        relationship_commands.append(cypher_command)
+                        print(f"DEBUG: Generated relationship Cypher: {cypher_command}")
+                        
+                    except Exception as e:
+                        print(f"ERROR: Failed to process relationship {i}: {e}")
+                        continue
 
-                # Execute the Cypher commands
-                if cypher_commands:
-                    combined_cypher = ";\n".join(cypher_commands)
-                    print(f"DEBUG: Executing combined Cypher:\n{combined_cypher}")
-                    result = self.db.execute_cypher(combined_cypher)
-                    return {"success": True, "message": "Graph updated", "cypher_result": result}
+                # Execute relationship creation
+                relationship_results = []
+                if relationship_commands:
+                    print(f"DEBUG: Executing {len(relationship_commands)} relationship creation commands")
+                    try:
+                        combined_rel_cypher = ";\n".join(relationship_commands) + ";"
+                        relationship_results = self.db.execute_cypher(combined_rel_cypher)
+                        print(f"DEBUG: Relationship creation results: {relationship_results}")
+                    except Exception as e:
+                        print(f"ERROR: Failed to create relationships: {e}")
+                        return {"success": False, "message": f"Relationship creation failed: {str(e)}"}
+
+                # Return combined results
+                total_commands = len(cypher_commands) + len(relationship_commands)
+                if total_commands > 0:
+                    return {
+                        "success": True, 
+                        "message": f"Graph updated: {len(cypher_commands)} nodes, {len(relationship_commands)} relationships", 
+                        "node_results": node_results if cypher_commands else [],
+                        "relationship_results": relationship_results,
+                        "commands_executed": total_commands
+                    }
                 else:
-                    return {"success": True, "message": "No nodes or relationships to add"}
+                    return {"success": True, "message": "No valid nodes or relationships to add"}
 
             except HTTPException as e:
                 raise e
             except Exception as e:
-                print(f"Error processing JSON to Cypher: {e}")
+                print(f"ERROR: Exception in json_to_cypher: {e}")
+                import traceback
+                traceback.print_exc()
                 raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {str(e)}")
 
         @self.app.get("/api/graph", response_model=GraphResponse)
@@ -400,9 +601,20 @@ class EverychartMCPServer:
             relationship_types: Optional[str] = None,
             depth: int = 1
         ):
-            rel_types = relationship_types.split(',') if relationship_types else None
-            expanded = self.db.get_connected_nodes(node_id, rel_types, depth)
-            return expanded
+            try:
+                print(f"DEBUG: expand_node called with node_id={node_id}, relationship_types={relationship_types}, depth={depth}")
+        
+                rel_types = relationship_types.split(',') if relationship_types else None
+                expanded = self.db.get_connected_nodes(node_id, rel_types, depth)
+        
+                print(f"DEBUG: expand_node returning {len(expanded)} results")
+                return {"success": True, "data": expanded}
+        
+            except Exception as e:
+                print(f"ERROR in expand_node endpoint: {e}")
+                import traceback
+                traceback.print_exc()
+                return {"success": False, "error": str(e), "data": []}
 
         async def context_event_generator():
             # In a real scenario, this would listen for events that trigger context updates
@@ -441,44 +653,9 @@ if __name__ == "__main__":
             redis_url=redis_url
         )
 
-    # Run in a separate thread/process in a real application
-    import threading
-    def run_server():
+        # Run the server
+        print("INFO: Starting MCP server on port 8000...")
         server.run(port=8000)
-    server_thread = threading.Thread(target=run_server)
-    server_thread.start()
-    time.sleep(1) # Give the server a moment to start
-
-    # Client usage example (would be in a separate process)
-    import asyncio
-    from mcp_client import EverychartMCPClient # Import client from its new file
-
-    async def client_example():
-        client = EverychartMCPClient("http://localhost:8000")
-
-        # Get hub nodes
-        hub_nodes = await client.get_hub_nodes(context_hints=["technology", "AI"])
-        print(f"Found {len(hub_nodes)} hub nodes")
-
-        # Get schema
-        schema = await client.get_schema()
-        print(f"Schema has {len(schema['nodeLabels'])} node labels")
-
-        # Execute a query
-        results = await client.execute_query(
-            "MATCH (n:TechnicalConcept) RETURN n LIMIT 5"
-        )
-        print(f"Query returned {len(results)} results")
-
-        # Get context for an LLM query
-        context = await client.get_context_for_query(
-            "How has machine learning impacted healthcare?"
-        )
-        print(f"Context includes {len(context['context'])} nodes")
-
-    asyncio.run(client_example())
-
-    # Give time to finish and then shutdown
-    time.sleep(2)
-    server.shutdown()
-    server_thread.join()
+        
+        # Remove the client example and threading code since it's causing issues
+        # The server will run normally and the game client will connect to it

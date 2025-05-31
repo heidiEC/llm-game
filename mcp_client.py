@@ -88,21 +88,35 @@ class EverychartMCPClient:
 
     async def expand_node(self, node_id: str, relationship_types: Optional[Union[List[str], str]] = None, depth: int = 1) -> List[Dict[str, Any]]:
         """Expand a node to get its connected nodes"""
-        params = {"depth": depth}
-        if relationship_types:
-            if isinstance(relationship_types, list):
-                params["relationship_types"] = ','.join(relationship_types)
-            else: # is_string
-                params["relationship_types"] = relationship_types
+        try:
+            params = {"depth": depth}
+            if relationship_types:
+                if isinstance(relationship_types, list):
+                    params["relationship_types"] = ','.join(relationship_types)
+                else: # is_string
+                    params["relationship_types"] = relationship_types
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.server_url}/api/expand-node/{node_id}",
-                params=params,
-                headers=self.headers
-            )
-        response.raise_for_status()
-        return response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.server_url}/api/expand-node/{node_id}",
+                    params=params,
+                    headers=self.headers
+                )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("success"):
+                    return result.get("data", [])
+                else:
+                    print(f"WARNING: expand_node failed: {result.get('error', 'Unknown error')}")
+                    return []
+            else:
+                print(f"WARNING: expand_node HTTP error {response.status_code}: {response.text}")
+                return []
+            
+        except Exception as e:
+            print(f"WARNING: expand_node exception: {e}")
+            return []
 
     async def get_context_for_query(self, query_text: str, max_nodes: int = 50) -> Dict[str, Any]:
         """
@@ -111,42 +125,45 @@ class EverychartMCPClient:
         2. Finding matching hub nodes
         3. Expanding those nodes to get relevant context
         """
-        # Extract potential key concepts (simplified implementation)
-        # In a real system, you'd use NLP techniques here (e.g., spaCy, NLTK)
-        key_concepts = [word for word in query_text.lower().split()
-                        if len(word) > 3 and word not in STOPWORDS]
+        try:
+            # Extract potential key concepts (simplified implementation)
+            key_concepts = [word for word in query_text.lower().split()
+                            if len(word) > 3 and word not in STOPWORDS]
 
-        hub_nodes = await self.get_hub_nodes(context_hints=key_concepts)
+            hub_nodes = await self.get_hub_nodes(context_hints=key_concepts)
 
-        top_hubs = sorted(hub_nodes, key=lambda x: x.get('relevanceScore', 0), reverse=True)[:3]
+            top_hubs = sorted(hub_nodes, key=lambda x: x.get('relevanceScore', 0), reverse=True)[:3]
 
-        context_nodes = []
-        # context_node_ids = set() # To avoid duplicates if expansions overlap
+            context_nodes = []
 
-        for hub in top_hubs:
-            if len(context_nodes) >= max_nodes:
-                break
-            
-            # Consider fetching fewer nodes if close to max_nodes
-            # remaining_capacity = max_nodes - len(context_nodes)
-            
-            expanded_data = await self.expand_node(hub['id'], depth=2) # 'id' is string from HubNode
-            
-            # Add nodes ensuring not to exceed max_nodes and avoid duplicates
-            for node_data in expanded_data:
-                # if node_data['id'] not in context_node_ids: # Assuming 'id' is unique string ID from API
-                #    context_nodes.append(node_data)
-                #    context_node_ids.add(node_data['id'])
-                context_nodes.append(node_data) # Simpler for now, may include duplicates from different expansions
+            for hub in top_hubs:
                 if len(context_nodes) >= max_nodes:
                     break
-            # context_nodes = context_nodes[:max_nodes] # Ensure strict limit after each hub expansion
+            
+                try:
+                    expanded_data = await self.expand_node(hub['id'], depth=2)
+                    
+                    # Add nodes ensuring not to exceed max_nodes
+                    for node_data in expanded_data:
+                        context_nodes.append(node_data)
+                        if len(context_nodes) >= max_nodes:
+                            break
+                except Exception as e:
+                    print(f"WARNING: Failed to expand hub node {hub['id']}: {e}")
+                    continue
 
-        return {
-            "query": query_text,
-            "hub_nodes": top_hubs,
-            "context": context_nodes[:max_nodes] # Final trim to max_nodes
-        }
+            return {
+                "query": query_text,
+                "hub_nodes": top_hubs,
+                "context": context_nodes[:max_nodes]
+            }
+        except Exception as e:
+            print(f"WARNING: get_context_for_query failed: {e}")
+            return {
+                "query": query_text,
+                "hub_nodes": [],
+                "context": []
+            }
     async def execute_json_to_cypher(self, payload: Dict) -> httpx.Response:
         """Send a JSON payload to the server for translation to Cypher and execution."""
         async with httpx.AsyncClient() as client:

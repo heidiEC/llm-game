@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from typing import Dict, List, Optional, Union, Any
 import asyncio
 from neo4j import GraphDatabase
@@ -13,18 +14,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Environment Variables (Make sure these are set) ---
-#NEO4J_URI = os.environ.get("NEO4J_URI")
-#NEO4J_USER = os.environ.get("NEO4J_USER")
-#NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3:latest")
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://localhost:8000")
 
 class KnowledgeGraphGame:
     def __init__(self):
-        # Connect to Neo4j (still used for initial setup and potentially direct access)
-        #self.driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-
         # Initialize Anthropic client
         if ANTHROPIC_API_KEY:
             self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -52,8 +47,6 @@ class KnowledgeGraphGame:
         self.current_graph_state = {"nodes": {}, "relationships": {}}
 
         self.load_participants()
-        asyncio.run(self.initialize_graph())
-        asyncio.run(self.update_current_graph_state_from_mcp())
 
     def load_participants(self):
         print("INFO: Participants managed in-memory.")
@@ -78,25 +71,78 @@ class KnowledgeGraphGame:
             "relationships": relationships
         }
 
-    async def fetch_graph_state_from_neo4j(self):
-        """Fallback to fetch graph state directly from Neo4j."""
-        print("WARNING: Falling back to fetch graph state directly from Neo4j.")
-        with self.driver.session() as session:
-            nodes = {}
-            nodes_result = session.run("MATCH (n) RETURN elementId(n) AS id, n, labels(n) AS labels")
-            for record in nodes_result:
-                nodes[record["id"]] = {"properties": dict(record["n"]), "labels": record["labels"], "id": record["id"]}
+    def setup_sustainable_urban_development_participants(self):
+        """Set up participants for Sustainable Urban Development domain"""
+        participants_config = [
+            {
+                "name": "UrbanPlanningExpert_LLM",
+                "expertise": "Urban Planning & Design",
+                "focus": "Zoning, transportation networks, mixed-use development, smart city infrastructure"
+            },
+            {
+                "name": "EnvironmentalScientist_LLM", 
+                "expertise": "Environmental Systems",
+                "focus": "Air quality, water management, green infrastructure, carbon footprint, biodiversity"
+            },
+            {
+                "name": "SocialPolicyAnalyst_LLM",
+                "expertise": "Social Policy & Equity",
+                "focus": "Housing affordability, community engagement, social justice, demographic impacts"
+            },
+            {
+                "name": "EconomicDevelopmentSpecialist_LLM",
+                "expertise": "Economic Systems",
+                "focus": "Local economy, job creation, cost-benefit analysis, funding mechanisms"
+            },
+            {
+                "name": "TechnologyInnovator_LLM",
+                "expertise": "Smart City Technology",
+                "focus": "IoT sensors, data analytics, renewable energy systems, digital governance"
+            },
+            {
+                "name": "TransportationEngineer_LLM",
+                "expertise": "Mobility & Transportation",
+                "focus": "Public transit, cycling infrastructure, electric vehicles, traffic optimization"
+            },
+            {
+                "name": "AffordableHousingAdvocate_LLM",
+                "expertise": "Affordable Housing",
+                "focus": "Housing policy, gentrification, tenant rights, community land trusts"
+            },
+            {
+                "name": "CommunityAdvocate_LLM",
+                "expertise": "Community Engagement",
+                "focus": "Resident participation, cultural preservation, neighborhood dynamics, grassroots initiatives"
+            },
+            {
+                "name": "ClimateResilienceExpert_LLM",
+                "expertise": "Climate Adaptation",
+                "focus": "Flood management, heat island effects, disaster preparedness, resilient infrastructure"
+            },
+            {
+                "name": "PublicHealthSpecialist_LLM",
+                "expertise": "Public Health",
+                "focus": "Air quality, walkability, mental health, health equity, environmental health, climate change, infectious disease prevention, health policy, community health"
+            },
+            {
+                "name": "DisasterRecoveryExpert_LLM",
+                "expertise": "Disaster Resilience & Emergency Management",
+                "focus": "Emergency preparedness, evacuation planning, infrastructure hardening, community resilience, post-disaster recovery"
+            }
+        ]
+        
+        for participant in participants_config:
+            self.add_llm_participant(
+                participant["name"], 
+                model_name="llama3:latest", 
+                client_type="ollama"
+            )
+            # Store expertise info for enhanced prompts
+            self.participants[-1]["expertise"] = participant["expertise"]
+            self.participants[-1]["focus"] = participant["focus"]
 
-            relationships = {}
-            rels_result = session.run("MATCH ()-[r]->() RETURN elementId(r) AS id, r, elementId(startNode(r)) AS source, elementId(endNode(r)) AS target, type(r) AS type")
-            for record in rels_result:
-                relationships[record["id"]] = {"properties": dict(record["r"]), "source": record["source"], "target": record["target"], "type": record["type"], "id": record["id"]}
-
-            self.current_graph_state = {"nodes": nodes, "relationships": relationships}
-            print("INFO: Graph state fetched directly from Neo4j.")
-
-    async def initialize_graph(self, force_reset=False):
-        """Ensure the foundational knowledge graph nodes and relationships exist via MCP."""
+    async def initialize_graph(self, force_reset=False, domain="sustainable_urban_development"):
+        """Enhanced initialization with domain-specific seed data"""
         if force_reset:
             print("INFO: Force reset requested. Clearing entire graph via MCP...")
             try:
@@ -105,17 +151,46 @@ class KnowledgeGraphGame:
             except Exception as e:
                 print(f"ERROR: Could not clear graph via MCP: {e}")
 
-        print("INFO: Ensuring foundational seed nodes and relationships exist via MCP...")
-        seed_cypher = """
-        MERGE (biomimeticAlgo:Concept:ComputerScience {name: "Biomimetic Algorithms", description: "Algorithms inspired by biological processes in nature", domain: "Computer Science"});
-        MERGE (antColony:Concept:Biology {name: "Ant Colony Optimization", description: "Swarm intelligence based on pheromone trail optimization", domain: "Biology"});
-        MERGE (networkRouting:Concept:Telecommunications {name: "Network Routing Algorithms", description: "Methods for determining optimal paths in communication networks", domain: "Telecommunications"});
-        MERGE (collectiveIntelligence:Concept:Behavior {name: "Collective Intelligence", description: "Shared or group intelligence emerging from collaboration", domain: "Complex Systems"});
-        MERGE (biomimeticAlgo)-[:INSPIRED_BY {analysis: "Biomimetic algorithms take inspiration from the principles of collective intelligence found in biological systems."}]->(collectiveIntelligence);
-        MERGE (antColony)-[:DEMONSTRATES {analysis: "Ant colony optimization is a specific example of a system that demonstrates collective intelligence."}]->(collectiveIntelligence);
-        MERGE (biomimeticAlgo)-[:APPLIED_TO {analysis: "Biomimetic algorithms, such as ant colony optimization, are applied to solve problems like network routing."}]->(networkRouting);
-        MERGE (antColony)-[:SERVES_AS_MODEL_FOR {analysis: "The behavior of ant colonies serves as a model for the design of biomimetic algorithms like ACO."}]->(biomimeticAlgo)
-        """
+        print(f"INFO: Ensuring foundational seed nodes and relationships exist for {domain}...")
+        
+        if domain == "sustainable_urban_development":
+            seed_cypher = """
+            MERGE (sustainableUrbanDev:Domain {name: "Sustainable Urban Development", description: "Integrated approach to creating environmentally responsible, economically viable, and socially equitable urban environments"});
+            
+            MERGE (urbanPlanning:TaxonomyCategory:UrbanPlanning {name: "Urban Planning", description: "Strategic design and organization of urban spaces", domain: "Sustainable Urban Development"});
+            MERGE (environmentalSystems:TaxonomyCategory:Environmental {name: "Environmental Systems", description: "Natural and built environmental interactions in urban contexts", domain: "Sustainable Urban Development"});
+            MERGE (socialEquity:TaxonomyCategory:Social {name: "Social Equity", description: "Fair distribution of resources and opportunities across urban populations", domain: "Sustainable Urban Development"});
+            MERGE (economicDevelopment:TaxonomyCategory:Economic {name: "Economic Development", description: "Sustainable economic growth and prosperity in urban areas", domain: "Sustainable Urban Development"});
+            MERGE (smartTechnology:TaxonomyCategory:Technology {name: "Smart Technology", description: "Digital and technological solutions for urban challenges", domain: "Sustainable Urban Development"});
+            MERGE (transportation:TaxonomyCategory:Transportation {name: "Transportation Systems", description: "Mobility infrastructure and services in urban environments", domain: "Sustainable Urban Development"});
+            MERGE (climateResilience:TaxonomyCategory:Climate {name: "Climate Resilience", description: "Urban adaptation and mitigation strategies for climate change", domain: "Sustainable Urban Development"});
+            
+            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(urbanPlanning);
+            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(environmentalSystems);
+            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(socialEquity);
+            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(economicDevelopment);
+            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(smartTechnology);
+            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(transportation);
+            MERGE (sustainableUrbanDev)-[:ENCOMPASSES {weight: 1.0, tag: "semantic"}]->(climateResilience);
+            
+            MERGE (urbanPlanning)-[:INFLUENCES {weight: 0.9, tag: "causal", analysis: "Urban planning decisions directly shape environmental outcomes through land use and infrastructure choices"}]->(environmentalSystems);
+            MERGE (transportation)-[:IMPACTS {weight: 0.8, tag: "causal", analysis: "Transportation systems significantly affect air quality, energy consumption, and urban form"}]->(environmentalSystems);
+            MERGE (economicDevelopment)-[:AFFECTS {weight: 0.7, tag: "causal", analysis: "Economic policies and development patterns influence social equity through job access and housing affordability"}]->(socialEquity);
+            MERGE (smartTechnology)-[:ENABLES {weight: 0.8, tag: "causal", analysis: "Smart city technologies can optimize resource use and improve service delivery across all urban systems"}]->(urbanPlanning);
+            """
+        else:
+            # Default seed data
+            seed_cypher = """
+            MERGE (biomimeticAlgo:Concept:ComputerScience {name: "Biomimetic Algorithms", description: "Algorithms inspired by biological processes in nature", domain: "Computer Science"});
+            MERGE (antColony:Concept:Biology {name: "Ant Colony Optimization", description: "Swarm intelligence based on pheromone trail optimization", domain: "Biology"});
+            MERGE (networkRouting:Concept:Telecommunications {name: "Network Routing Algorithms", description: "Methods for determining optimal paths in communication networks", domain: "Telecommunications"});
+            MERGE (collectiveIntelligence:Concept:Behavior {name: "Collective Intelligence", description: "Shared or group intelligence emerging from collaboration", domain: "Complex Systems"});
+            MERGE (biomimeticAlgo)-[:INSPIRED_BY {analysis: "Biomimetic algorithms take inspiration from the principles of collective intelligence found in biological systems."}]->(collectiveIntelligence);
+            MERGE (antColony)-[:DEMONSTRATES {analysis: "Ant colony optimization is a specific example of a system that demonstrates collective intelligence."}]->(collectiveIntelligence);
+            MERGE (biomimeticAlgo)-[:APPLIED_TO {analysis: "Biomimetic algorithms, such as ant colony optimization, are applied to solve problems like network routing."}]->(networkRouting);
+            MERGE (antColony)-[:SERVES_AS_MODEL_FOR {analysis: "The behavior of ant colonies serves as a model for the design of biomimetic algorithms like ACO."}]->(biomimeticAlgo);
+            """
+        
         try:
             await self.mcp_client.execute_query(seed_cypher)
             print("INFO: Seed nodes and relationships ensured via MCP.")
@@ -179,7 +254,7 @@ class KnowledgeGraphGame:
             return {"error": str(e)}
 
     async def generate_prompt_for_llm(self, participant_index):
-        """Generate a prompt for the LLM to contribute in JSON format, including the current graph."""
+        """Generate a domain and expertise-aware prompt for the LLM"""
         participant = self.participants[participant_index]
         current_graph_json = await self.get_graph_json_for_prompt()
         existing_node_names = []
@@ -188,74 +263,108 @@ class KnowledgeGraphGame:
 
         existing_nodes_str = "\n- ".join(sorted([name for name in existing_node_names if name])) if existing_node_names else "No nodes yet."
 
+        expertise_section = ""
+        if "expertise" in participant:
+            expertise_section = f"""
+## Your Expertise: {participant['expertise']}
+
+Your area of specialization: {participant.get('focus', 'General expertise in this domain')}
+
+While you should primarily contribute nodes and insights from your area of expertise, you are strongly encouraged to:
+1. **Create cross-domain relationships** - Connect your concepts to nodes created by other experts
+2. **Identify causal chains** - Look for cause-and-effect relationships, especially across disciplines
+3. **Bridge knowledge gaps** - Help connect isolated concepts from different domains
+4. **Include population segments and life contexts** - Consider specific groups of people and places where policies have real impact
+"""
+
         prompt = f"""
-        # LLM Knowledge Graph Game - Turn {self.turn_count + 1}
+# LLM Knowledge Graph Game - Turn {self.turn_count + 1}
+## Domain: Sustainable Urban Development
 
-        You are participating in a collaborative knowledge graph building game as {participant['name']}.
+You are participating in a collaborative knowledge graph building game as {participant['name']}.
+{expertise_section}
 
-        ## Current Knowledge Graph Nodes
+## Current Knowledge Graph Nodes
 
-        The knowledge graph currently contains nodes with these names:
-        - {existing_nodes_str}
+The knowledge graph currently contains nodes with these names:
+- {existing_nodes_str}
 
-        ## Game Rules
+## CRITICAL: Response Format Requirements
 
-        Your primary task is to expand the existing knowledge graph, focusing not just on what is related, but also on **why** things are connected. When you propose new nodes or relationships, please tag each relationship in the 'properties' as either "semantic" or "causal" and assign it a 'weight' between 0.0 and 1.0 indicating the strength or likelihood of the connection. Also include an 'analysis' property for both new nodes and relationships.
+**YOU MUST RESPOND WITH VALID JSON ONLY. NO MARKDOWN, NO EXPLANATIONS OUTSIDE THE JSON.**
 
-        You can contribute by:
+Your response must be a single JSON object that starts with {{ and ends with }}. Do not include any text before or after the JSON.
 
-        1. Adding 1-3 new nodes connected to existing nodes.
-        2. Adding new relationships between existing nodes.
+Example format:
+{{
+  "explanation": "Brief explanation...",
+  "nodes": [...],
+  "relationships": [...],
+  "future_directions": [...]
+}}
 
-        Your contribution should:
-        - Be connected to at least one existing node in the graph (by name).
-        - Provide novel, creative, and accurate information.
-        - Explore interesting, non-obvious, yet relevant connections.
-        - Reflect your unique perspective or "expertise" as {participant['name']}.
+## Game Rules & Objectives
 
-        ## Response Format
+Your primary task is to expand the knowledge graph with a focus on **cross-domain connections** and **causal relationships**. 
 
-        Please respond with a JSON object:
+**Key Priorities:**
+1. **Causal Relationships**: Identify cause-and-effect chains (tag as "causal" with weight 0.1-1.0)
+2. **Semantic Relationships**: Create conceptual connections (tag as "semantic" with weight 0.1-1.0)
+3. **Cross-Domain Bridges**: Connect your expertise area to other domains represented in the graph
+4. **Population & Context Focus**: Include specific population groups and life settings (work, home, recreation)
+5. **Practical Applications**: Focus on real-world, actionable concepts
 
-        
-        {{
-          "explanation": "A brief explanation...",
-          "nodes": [
-            {{
-              "name": "Name of new node 1",
-              "labels": ["Category1", "Category2"],
-              "properties": {{
-                "description": "...",
-                "analysis": "Analysis of this entity.",
-                // ... other properties
-              }}
-            }},
-            // ... more new nodes
-          ],
-          "relationships": [
-            {{
-              "source_node_name": "Name of existing node",
-              "target_node_name": "Name of node",
-              "type": "RELATIONSHIP_TYPE",
-              "properties": {{
-                "tag": "semantic" or "causal",
-                "weight": 0.0 to 1.0,
-                "analysis": "Analysis of the relationship.",
-                // ... other properties
-              }}
-            }},
-            // ... more new relationships
-          ],
-          "future_directions": ["Suggestion 1", "Suggestion 2"]
-        }}
-        
+**Important**: Consider including specific **population groups** and **life contexts** that are central to your expertise:
+- Population segments: "Working families", "Elderly residents", "Low-income families", "College students"
+- Life contexts: "Affordable housing complexes", "Public transit hubs", "Community centers", "Industrial zones"
+- Specific policies/programs: "Section 8 housing", "Complete streets policies", "Green building standards"
 
-        Ensure that you reference existing nodes by their `"name"` property when defining relationships. Be insightful and aim to enrich the graph with valuable, interconnected knowledge!
-        """
+**Contribution Guidelines:**
+- Add 1-3 new nodes, preferably from your expertise area
+- Create 2-4 relationships (mix of new connections and bridges to existing nodes)
+- Weight relationships: 0.8-1.0 (strong), 0.5-0.7 (moderate), 0.1-0.4 (weak)
+- Provide detailed analysis explaining WHY relationships exist
+
+## JSON Response Format (COPY THIS STRUCTURE EXACTLY)
+
+{{
+  "explanation": "Brief explanation of your contribution and cross-domain connections...",
+  "nodes": [
+    {{
+      "name": "Specific Node Name",
+      "labels": ["PrimaryCategory", "SecondaryCategory"],
+      "properties": {{
+        "description": "Detailed description...",
+        "domain": "Sustainable Urban Development",
+        "expertise_area": "{participant.get('expertise', 'General')}",
+        "analysis": "Why this concept is important and how it connects to the broader domain...",
+        "practical_applications": "Real-world applications or examples..."
+      }}
+    }}
+  ],
+  "relationships": [
+    {{
+      "source_node_name": "Existing Node Name",
+      "target_node_name": "New or Existing Node Name", 
+      "type": "RELATIONSHIP_TYPE",
+      "properties": {{
+        "tag": "causal",
+        "weight": 0.8,
+        "analysis": "Detailed explanation of WHY this relationship exists and its strength...",
+        "cross_domain": true,
+        "evidence": "Supporting evidence or examples..."
+      }}
+    }}
+  ],
+  "future_directions": ["Specific suggestions for other experts to explore..."]
+}}
+
+REMEMBER: Respond with ONLY the JSON object. No markdown formatting, no explanations outside the JSON.
+"""
         return prompt
-
+    
     def extract_json_from_response(self, response_text: str) -> Optional[dict]:
-        """Extract JSON from response text, handling markdown code blocks."""
+        """Extract JSON from response text, handling markdown code blocks and various formats."""
         import re
         
         # First try direct JSON parsing
@@ -265,33 +374,115 @@ class KnowledgeGraphGame:
             pass
         
         # Try to extract JSON from markdown code blocks
-        json_pattern = r'(?:json)?\s*(\{.*?\})\s*'
-        matches = re.findall(json_pattern, response_text, re.DOTALL | re.IGNORECASE)
+        json_patterns = [
+            r'(?:json)?\s*(\{.*?\})\s*',  #  { } 
+            r'(\{.*?\})',                 #  { } 
+            r'`(\{.*?\})`',                     # ` { } `
+        ]
         
-        for match in matches:
-            try:
-                return json.loads(match)
-            except json.JSONDecodeError:
-                continue
+        for pattern in json_patterns:
+            matches = re.findall(pattern, response_text, re.DOTALL | re.IGNORECASE)
+            for match in matches:
+                try:
+                    parsed_json = json.loads(match.strip())
+                    if parsed_json:
+                        return parsed_json
+                except json.JSONDecodeError:
+                    continue
         
         # Try to find JSON-like content without code blocks
-        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-        matches = re.findall(json_pattern, response_text, re.DOTALL)
+        brace_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        matches = re.findall(brace_pattern, response_text, re.DOTALL)
         
         for match in matches:
             try:
-                return json.loads(match)
+                cleaned_match = re.sub(r'\s+', ' ', match.strip())
+                return json.loads(cleaned_match)
             except json.JSONDecodeError:
                 continue
         
+        # If all else fails, try to convert markdown to JSON
+        try:
+            return self.convert_markdown_to_json(response_text)
+        except:
+            pass
+        
         return None
+
+    def convert_markdown_to_json(self, markdown_text: str) -> Optional[dict]:
+        """Convert the markdown response to JSON format."""
+        import re
+        
+        # Extract explanation
+        explanation_match = re.search(r'\*\*Contribution\*\*(.*?)(?=\*\*Nodes:\*\*)', markdown_text, re.DOTALL)
+        explanation = explanation_match.group(1).strip() if explanation_match else "Urban planning contribution"
+        
+        # Extract nodes
+        nodes = []
+        node_pattern = r'\d+\.\s+\*\*(.*?)\*\*(.*?)(?=\d+\.\s+\*\*|\*\*Relationships:\*\*|$)'
+        node_matches = re.findall(node_pattern, markdown_text, re.DOTALL)
+        
+        for node_name, node_content in node_matches:
+            node_name = node_name.strip()
+        
+            # Extract labels
+            labels_match = re.search(r'Labels:\s*"([^"]*)",?\s*"?([^"]*)"?', node_content)
+            labels = []
+            if labels_match:
+                labels = [labels_match.group(1)]
+                if labels_match.group(2):
+                    labels.append(labels_match.group(2))
+        
+            # Extract properties
+            description_match = re.search(r'Description:\s*(.*?)(?=\+|$)', node_content, re.DOTALL)
+            description = description_match.group(1).strip() if description_match else ""
+        
+            node = {
+                "name": node_name,
+                "labels": labels or ["UrbanPlanning"],
+                "properties": {
+                    "description": description,
+                    "domain": "Sustainable Urban Development",
+                    "expertise_area": "Urban Planning & Design",
+                    "analysis": f"Analysis for {node_name}",
+                    "practical_applications": f"Practical applications for {node_name}"
+                }
+            }
+            nodes.append(node)
+        
+        # Extract relationships
+        relationships = []
+        rel_pattern = r'\d+\.\s+\*\*(.*?)\s*->\s*(.*?)\*\*(.*?)(?=\d+\.\s+\*\*|\*\*Future Directions:\*\*|$)'
+        rel_matches = re.findall(rel_pattern, markdown_text, re.DOTALL)
+        
+        for source, target, rel_content in rel_matches:
+            relationship = {
+                "source_node_name": source.strip(),
+                "target_node_name": target.strip(),
+                "type": "INFLUENCES",
+                "properties": {
+                    "tag": "causal",
+                    "weight": 0.8,
+                    "analysis": f"Relationship between {source.strip()} and {target.strip()}",
+                    "cross_domain": True,
+                    "evidence": "Urban planning research"
+                }
+            }
+            relationships.append(relationship)
+        
+        return {
+            "explanation": explanation,
+            "nodes": nodes,
+            "relationships": relationships,
+            "future_directions": ["Explore cross-domain connections", "Investigate causal relationships"]
+        }
 
     async def process_llm_turn(self, participant_index):
         """Process a turn for an LLM participant, sending JSON to MCP server."""
         participant = self.participants[participant_index]
         prompt = await self.generate_prompt_for_llm(participant_index)
         llm_response_json = None
-
+        
         try:
             if participant["client_type"] == "anthropic":
                 if not self.client:
@@ -303,9 +494,11 @@ class KnowledgeGraphGame:
                     messages=[{"role": "user", "content": str(prompt)}]
                 )
                 response_text = response.content[0].text
+                print(f"\nDEBUG: Raw response from {participant['name']}:\n{response_text[:500]}...\n")
                 llm_response_json = self.extract_json_from_response(response_text)
                 if not llm_response_json:
-                    print(f"WARNING: Could not decode JSON from Anthropic for {participant['name']}: {response_text[:200]}...")
+                    print(f"WARNING: Could not decode JSON from Anthropic for {participant['name']}")
+                    print(f"Full response: {response_text}")
                     return {"participant": participant["name"], "success": False, "message": "Could not decode JSON response."}
 
             elif participant["client_type"] == "ollama":
@@ -319,9 +512,11 @@ class KnowledgeGraphGame:
                 )
                 if ollama_response and 'message' in ollama_response and 'content' in ollama_response['message']:
                     response_text = ollama_response['message']['content']
+                    print(f"\nDEBUG: Raw response from {participant['name']}:\n{response_text[:500]}...\n")
                     llm_response_json = self.extract_json_from_response(response_text)
                     if not llm_response_json:
-                        print(f"WARNING: Could not decode JSON from Ollama for {participant['name']}: {response_text[:200]}...")
+                        print(f"WARNING: Could not decode JSON from Ollama for {participant['name']}")
+                        print(f"Full response: {response_text}")
                         return {"participant": participant["name"], "success": False, "message": "Could not decode JSON response."}
                 else:
                     raise Exception("Invalid or empty response structure from Ollama.")
@@ -383,7 +578,7 @@ class KnowledgeGraphGame:
             elif result:
                 print(f"Contribution failed: {result['message']}")
             results.append(result)
-            time.sleep(1) # Be gentle on the LLMs and server
+            time.sleep(1)  # Be gentle on the LLMs and server
 
         print("\n--- Game Complete ---")
         return results
@@ -443,32 +638,31 @@ class KnowledgeGraphGame:
             self.driver.close()
         print("INFO: Neo4j driver connection closed.")
 
+
 # Example usage and main game execution block
 if __name__ == "__main__":
-    # Ensure environment variables are set
-    if not all([os.environ.get(key) for key in ["NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "ANTHROPIC_API_KEY", "OLLAMA_MODEL", "MCP_SERVER_URL"]]):
-        print("Error: Please set NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, ANTHROPIC_API_KEY (optional), OLLAMA_MODEL, and MCP_SERVER_URL environment variables.")
+    # For demo purposes, we'll use the new setup
+    game = KnowledgeGraphGame()
+    
+    # Set up the sustainable urban development participants
+    game.setup_sustainable_urban_development_participants()
+    
+    # Initialize with the correct domain
+    asyncio.run(game.initialize_graph(domain="sustainable_urban_development"))
+    
+    num_participants = len(game.participants)
+    if num_participants > 0:
+        print(f"INFO: Starting game with {num_participants} participants for {num_participants * 2} turns.")
+        results = asyncio.run(game.run_game(num_turns=num_participants * 2))
+        print("\n--- Game Results ---")
+        for result in results:
+            print(f"{result.get('participant')}: {result.get('message')}")
     else:
-        game = KnowledgeGraphGame()
+        print("WARNING: No participants added to the game. Game will not run.")
 
-        # Add LLM participants
-        game.add_llm_participant("PhilosopherOfComplexity_LLM", model_name="llama3:latest", client_type="ollama")
-        game.add_llm_participant("RoboticsFuturist_LLM", model_name="llama3:latest", client_type="ollama")
-        # Add more participants as needed
+    final_graph_json = asyncio.run(game.export_graph(format="json"))
+    print("\n--- Final Graph (JSON Representation) ---")
+    print(final_graph_json)
 
-        num_participants = len(game.participants)
-        if num_participants > 0:
-            print(f"INFO: Starting game with {num_participants} participants for {num_participants * 2} turns.")
-            results = asyncio.run(game.run_game(num_turns=num_participants * 2))
-            print("\n--- Game Results ---")
-            for result in results:
-                print(f"{result.get('participant')}: {result.get('message')}")
-        else:
-            print("WARNING: No participants added to the game. Game will not run.")
-
-        final_graph_json = asyncio.run(game.export_graph(format="json"))
-        print("\n--- Final Graph (JSON Representation) ---")
-        print(final_graph_json)
-
-        game.close()
-        print("INFO: Game script finished.")
+    game.close()
+    print("INFO: Game script finished.")
