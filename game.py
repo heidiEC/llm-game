@@ -143,6 +143,21 @@ class KnowledgeGraphGame:
                 "name": "SpiritualPhilosopher_LLM", 
                 "expertise": "Meaning-Making & Faith",
                 "focus": "Quest for meaning, relationship with spirituality, philosophical development"
+            },
+            {
+                "name": "FashionHistorian_LLM",
+                "expertise": "Fashion History & Influence",
+                "focus": "Her iconic style, collaborations with designers (like Givenchy), the impact of her fashion on broader trends, her understanding of elegance."
+            },
+            {
+                "name": "FilmScholar_LLM",
+                "expertise": "Film History & Performance Analysis",
+                "focus": "Her acting techniques, the evolution of her on-screen persona, her relationships with directors and co-stars, the cultural impact of her films."
+            },
+            {
+                "name": "HollywoodInsider_LLM",
+                "expertise": "Golden age of Hollywood",
+                "focus": "Studio system influences, her rise to fame, the pressures and expectations of Hollywood, her relationships within the industry."
             }
         ]
         
@@ -277,10 +292,29 @@ You are contributing to building an authentic psychological and cultural knowled
 You are participating in building a comprehensive knowledge graph as {participant['name']} to create the most psychologically authentic AI representation of Audrey Hepburn ever developed.
 {expertise_section}
 
-## Current Knowledge Graph Nodes
+## IMPORTANT: Build on Existing Concepts
 
-The knowledge graph currently contains nodes with these names:
+Before creating new nodes, check if similar concepts already exist in the current graph:
 - {existing_nodes_str}
+
+**If a similar concept exists:**
+- Create relationships TO that existing node instead of duplicating
+- Add your expertise perspective through the relationship analysis
+- Only create a new node if your angle is genuinely distinct
+
+**If you want to "upvote" or reinforce an existing concept:**
+- Create a relationship like: (your_new_concept)-[:VALIDATES]->(existing_concept)
+- Or: (existing_concept)-[:REINFORCED_BY]->(your_evidence_node)
+## CRITICAL: Response Format Requirements
+
+**YOU MUST RESPOND WITH VALID JSON ONLY. NO MARKDOWN, NO EXPLANATIONS OUTSIDE THE JSON.**
+
+Your response must be a single JSON object that starts with {{ and ends with }}. Do not include any text before or after the JSON.
+
+- Use proper JSON escaping for quotes and special characters
+- Do not use comments (//) in the JSON
+- Ensure all strings are properly quoted
+- Test your JSON structure before responding
 
 ## Mission & Objectives
 
@@ -305,12 +339,19 @@ Your goal is to contribute deep, authentic insights about Audrey Hepburn that ca
 - Cultural influences and identity formation
 
 **Contribution Guidelines:**
-- Add 1-3 new nodes that reveal deep aspects of her psychology or character
+- Add 1-3 new nodes not duplicates that reveal deep aspects of her psychology or character
 - Create 2-4 relationships (mix of new connections and bridges to existing nodes)
 - Weight relationships: 0.8-1.0 (strong), 0.5-0.7 (moderate), 0.1-0.4 (weak)
 - Provide detailed analysis explaining WHY relationships exist and their psychological significance
 
-## Response Format
+# Suggested relationship types for reinforcement:
+- VALIDATES
+- REINFORCES  
+- PROVIDES_EVIDENCE_FOR
+- SUPPORTS_THEORY_OF
+- CONFIRMS_PATTERN_OF
+
+## JSON Response Format (COPY THIS STRUCTURE EXACTLY)
 
 {{
   "explanation": "Brief explanation of your psychological insights and how they connect to authentic Audrey...",
@@ -331,10 +372,10 @@ Your goal is to contribute deep, authentic insights about Audrey Hepburn that ca
     {{
       "source_node_name": "Existing Node Name",
       "target_node_name": "New or Existing Node Name", 
-      "type": "MEANINGFUL_RELATIONSHIP_NAME",  // e.g., "SHAPED_INTO", "INFLUENCED", "MANIFESTED_AS", "BALANCED_WITH"
+      "type": "MEANINGFUL_RELATIONSHIP_NAME",
       "properties": {{
-        "tag": "causal" or "semantic",
-        "weight": 0.0 to 1.0,
+        "tag": "causal",
+        "weight": 0.8,
         "analysis": "Detailed explanation of WHY this connection exists...",
         "evidence": "Supporting evidence...",
         "authenticity_impact": "How this contributes to authentic AI representation..."
@@ -344,7 +385,7 @@ Your goal is to contribute deep, authentic insights about Audrey Hepburn that ca
   "future_directions": ["Specific suggestions for other experts to explore..."]
 }}
 
-Focus on creating a rich, psychologically authentic knowledge web that captures the essence of who Audrey truly was! 🎭✨
+REMEMBER: Respond with ONLY the JSON object. No markdown formatting, no explanations outside the JSON.
 """
         return prompt
 
@@ -387,81 +428,15 @@ Focus on creating a rich, psychologically authentic knowledge web that captures 
             except json.JSONDecodeError:
                 continue
         
-        # If all else fails, try to convert markdown to JSON
-        try:
-            return self.convert_markdown_to_json(response_text)
-        except:
-            pass
-        
-        return None
+        # If all else fails, DON'T create fake data
+        print(f"WARNING: Could not extract valid JSON from response: {response_text[:200]}...")
+        return None  # Return None instead of fake data
 
     def convert_markdown_to_json(self, markdown_text: str) -> Optional[dict]:
         """Convert the markdown response to JSON format."""
-        import re
-        
-        # Extract explanation
-        explanation_match = re.search(r'\*\*Contribution\*\*(.*?)(?=\*\*Nodes:\*\*)', markdown_text, re.DOTALL)
-        explanation = explanation_match.group(1).strip() if explanation_match else "Urban planning contribution"
-        
-        # Extract nodes
-        nodes = []
-        node_pattern = r'\d+\.\s+\*\*(.*?)\*\*(.*?)(?=\d+\.\s+\*\*|\*\*Relationships:\*\*|$)'
-        node_matches = re.findall(node_pattern, markdown_text, re.DOTALL)
-        
-        for node_name, node_content in node_matches:
-            node_name = node_name.strip()
-        
-            # Extract labels
-            labels_match = re.search(r'Labels:\s*"([^"]*)",?\s*"?([^"]*)"?', node_content)
-            labels = []
-            if labels_match:
-                labels = [labels_match.group(1)]
-                if labels_match.group(2):
-                    labels.append(labels_match.group(2))
-        
-            # Extract properties
-            description_match = re.search(r'Description:\s*(.*?)(?=\+|$)', node_content, re.DOTALL)
-            description = description_match.group(1).strip() if description_match else ""
-        
-            node = {
-                "name": node_name,
-                "labels": labels or ["UrbanPlanning"],
-                "properties": {
-                    "description": description,
-                    "domain": "Sustainable Urban Development",
-                    "expertise_area": "Urban Planning & Design",
-                    "analysis": f"Analysis for {node_name}",
-                    "practical_applications": f"Practical applications for {node_name}"
-                }
-            }
-            nodes.append(node)
-        
-        # Extract relationships
-        relationships = []
-        rel_pattern = r'\d+\.\s+\*\*(.*?)\s*->\s*(.*?)\*\*(.*?)(?=\d+\.\s+\*\*|\*\*Future Directions:\*\*|$)'
-        rel_matches = re.findall(rel_pattern, markdown_text, re.DOTALL)
-        
-        for source, target, rel_content in rel_matches:
-            relationship = {
-                "source_node_name": source.strip(),
-                "target_node_name": target.strip(),
-                "type": "INFLUENCES",
-                "properties": {
-                    "tag": "causal",
-                    "weight": 0.8,
-                    "analysis": f"Relationship between {source.strip()} and {target.strip()}",
-                    "cross_domain": True,
-                    "evidence": "Urban planning research"
-                }
-            }
-            relationships.append(relationship)
-        
-        return {
-            "explanation": explanation,
-            "nodes": nodes,
-            "relationships": relationships,
-            "future_directions": ["Explore cross-domain connections", "Investigate causal relationships"]
-        }
+        # Remove this method entirely, or make it return None
+        print("WARNING: Markdown conversion attempted but not reliable for Audrey context")
+        return None
 
     async def process_llm_turn(self, participant_index):
         """Process a turn for an LLM participant, sending JSON to MCP server."""
@@ -539,7 +514,14 @@ Focus on creating a rich, psychologically authentic knowledge web that captures 
                     print(f"HTTP error from MCP server: {e.response.status_code} - {e.response.text}")
                     return {"participant": participant["name"], "success": False, "message": f"HTTP error from MCP server: {e.response.status_code}."}
             else:
-                return {"participant": participant["name"], "success": False, "message": "No valid JSON response from LLM."}
+                if not llm_response_json:
+                    print(f"WARNING: Could not decode JSON from {participant['client_type']} for {participant['name']}")
+                    print(f"Full response: {response_text}")
+                    return {
+                        "participant": participant["name"], 
+                        "success": False, 
+                        "message": "Could not decode JSON response - skipping turn to maintain data quality"
+                    }
 
         except Exception as e:
             print(f"Error processing LLM turn for {participant['name']}: {e}")
